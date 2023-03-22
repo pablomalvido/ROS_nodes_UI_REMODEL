@@ -16,4 +16,4 @@ This repository contains some of the nodes required to communicate with the REMO
 
 - The CAD Platform nodes needs to provide a service server to request the sequence of all the operations of the process, so they can be displayed in the dropdown menu of the UI.
 
-- The robot launcher file must spawn cameras in the required locations of the simulation environment. To stream the videos of this cameras in the UI, the name of the topics of the cameras must be updated in the Home.vue page of the UI to be compatible. 
+- The robot launcher file must spawn cameras in the required locations of the simulation environment. To stream the videos of this cameras in the UI, the name of the topics of the cameras must be updated in the Home.vue page of the UI to be compatible. You can find more information about this in the following link: https://roboticsknowledgebase.com/wiki/tools/stream-rviz/ 
