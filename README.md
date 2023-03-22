@@ -1,6 +1,6 @@
 # ROS nodes for REMODEL UI
 
-This repository contains some of the nodes required to communicate with the REMODEL UI. Additionally, nodes from other packages, such as the CAD Platform, the robot pkg, the teaching system, or the RSM (REMODEL Safety Manager) are required. This package contains five nodes, launched by four launch files:
+This repository contains some of the nodes required to communicate with the REMODEL UI (https://github.com/pablomalvido/UI_REMODEL). Additionally, nodes from other packages, such as the CAD Platform, the robot pkg, the teaching system, or the RSM (REMODEL Safety Manager) are required. This package contains five nodes, launched by four launch files:
 
 - **launcher.launch:** Launches the **launch_script_multiple.py** node. This node contains services for launching and stopping a list of launch files, by specifying their packages and names. This node can be used directly and doesn't require modifications to be integrated with the UI.
 
