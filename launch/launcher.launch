@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<launch>
+    <node name="launch_node" pkg="UI_nodes_pkg" type="launch_script_multiple.py" output="screen">
+    </node>
+</launch>  

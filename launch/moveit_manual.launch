@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<launch>
+    <node name="moveit_manual" pkg="UI_nodes_pkg" type="moveit_tests.py" output="screen">
+    </node>
+</launch>  

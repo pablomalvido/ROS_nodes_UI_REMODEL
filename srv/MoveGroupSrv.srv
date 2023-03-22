@@ -1,0 +1,6 @@
+string group
+string target_named
+int32 type
+ArmsDisplacement target_pose 
+---------------
+bool success

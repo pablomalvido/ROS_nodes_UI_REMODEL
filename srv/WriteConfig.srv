@@ -1,0 +1,6 @@
+string file_name
+string prop
+string value
+
+---------------
+bool success
