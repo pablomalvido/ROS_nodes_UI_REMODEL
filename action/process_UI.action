@@ -11,3 +11,4 @@ bool success
 int32 index
 int32 subindex
 int32 subindex2
+string message

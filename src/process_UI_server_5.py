@@ -3825,12 +3825,13 @@ class ElvezProcessClass(object):
                 modeUI="Idle"
                 mode_publisher.publish(msg)
 
-        def publish_feedback(self):
+        def publish_feedback(self, message=""):
                 global step1
                 global step2
                 self._feedback.index = self._index
                 self._feedback.subindex = step1
                 self._feedback.subindex2 = step2
+                self._feedback.message = message
                 self._as.publish_feedback(self._feedback)
 
         def goal_callback(self, goal):
@@ -3888,6 +3889,7 @@ class ElvezProcessClass(object):
                 msg.data = "Idle"
                 modeUI = "Idle"
                 mode_publisher.publish(msg)
+                self.publish_feedback("done") 
 
                 if success:
                         if not stop_mov and goal.auto:

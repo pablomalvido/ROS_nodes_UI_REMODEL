@@ -11,11 +11,11 @@ speed_gripper,40
 speed_medium_real_mms,40
 grasp_dist,20
 offset_x,5
-slide_dist,45
 offset_z,5
 speed_slow_real_mms,20
-speed_fast_real_mms,60
-speed_fast_demo_mms,80
-speed_slow_demo_mms,30
 open_dist,100
+speed_fast_demo_mms,80
+slide_dist,45
+speed_fast_real_mms,60
 force_control,Y
+speed_slow_demo_mms,80
