@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 
 import sys
 import copy
@@ -80,7 +80,7 @@ while not rospy.is_shutdown():
             roslaunch.configure_logging(uuid)
             launch_name = to_launch_copy_i.split("/")[-1]
             package_name = to_launch_copy_i[:-len(launch_name)-1]
-            file_name = "/home/remodel/catkin_ws/src/" + package_name + "/launch/" + launch_name + ".launch"
+            file_name = "/home/lar/ros/elvez_ws/src/" + package_name + "/launch/" + launch_name + ".launch"
             launch_[to_launch_copy_i] = roslaunch.parent.ROSLaunchParent(uuid, [file_name], sigint_timeout=1.5, sigterm_timeout=0.5)
             launch_[to_launch_copy_i].start()
             to_launch.remove(to_launch_copy_i)

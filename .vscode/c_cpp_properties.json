@@ -1,0 +1,29 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/lar/ros/elvez_ws/devel/include/**",
+        "/opt/ros/noetic/include/**",
+        "/home/lar/ros/elvez_ws/src/franka_ros/franka_control/include/**",
+        "/home/lar/ros/elvez_ws/src/franka_driver/franka_controllers/include/**",
+        "/home/lar/ros/elvez_ws/src/franka_ros/franka_example_controllers/include/**",
+        "/home/lar/ros/elvez_ws/src/franka_ros/franka_gazebo/include/**",
+        "/home/lar/ros/elvez_ws/src/franka_ros/franka_gripper/include/**",
+        "/home/lar/ros/elvez_ws/src/franka_ros/franka_hw/include/**",
+        "/home/lar/ros/elvez_ws/src/UCLV/sensor_pkg/read_sensor/include/**",
+        "/home/lar/ros/elvez_ws/src/UCLV/sensor_pkg/serial/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}
