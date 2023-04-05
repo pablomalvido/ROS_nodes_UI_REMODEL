@@ -26,6 +26,10 @@ This repository contains some of the nodes required to communicate with the REMO
 
 	- **publish_feedback.py:** This node publishes contain publishers that publish UI feedback. In particular, it publishes the speed of each end effector. This node must be modified for the number of robots used and their specific groups names.
 
+-  **fake_sensors:** Launches a node that publishes fake data for the force and tactile sensors.
+
+-  **record_traj:** Launches a node that simulates the services for recording and executing trajectories.
+
 # Additional considerations
 
 - The CAD Platform nodes needs to provide a service server to request the sequence of all the operations of the process, so they can be displayed in the dropdown menu of the UI.
