@@ -56,6 +56,7 @@ add_message_files(
   ArmsDisplacement.msg
   configProp.msg
   forces.msg
+  tactile.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -68,6 +69,9 @@ add_service_files(
    WriteConfig.srv
    GetConfig.srv
    SetConfig.srv
+   RecordTraj.srv
+   GetTraj.srv
+   ExecTraj.srv
 )
 
 ## Generate actions in the 'action' folder
