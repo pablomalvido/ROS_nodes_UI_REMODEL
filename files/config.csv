@@ -2,10 +2,10 @@ prop,value
 speed_slow_real_per,0.1
 speed_fast_real_per,0.5
 speed_fast_demo_per,1
-speed_medium_demo_per,0.5
+speed_medium_demo_per,0.6
 cable_tension,3
 speed_medium_real_per,0.3
-speed_medium_demo_mms,50
+slide_dist,45
 speed_slow_demo_per,0.2
 speed_gripper,40
 speed_medium_real_mms,40
@@ -15,7 +15,7 @@ offset_z,5
 speed_slow_real_mms,20
 open_dist,100
 speed_fast_demo_mms,80
-slide_dist,45
+speed_medium_demo_mms,50
 speed_fast_real_mms,60
 force_control,Y
-speed_slow_demo_mms,80
+speed_slow_demo_mms,100

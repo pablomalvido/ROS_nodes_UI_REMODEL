@@ -37,6 +37,10 @@ rospy.init_node('moveit_manual', anonymous=True)
 get_moveit_groups_service = 'UI/get_moveit_groups'
 move_group_service = 'UI/move_group'
 get_arms_pose_service = 'UI/get_arms_pose'
+client_left_move = actionlib.SimpleActionClient('/left_wsg/action/move', gripper_ActAction)
+client_right_move = actionlib.SimpleActionClient('/right_wsg/action/move', gripper_ActAction)
+client_left_grasp = actionlib.SimpleActionClient('/left_wsg/action/grasp', gripper_ActAction)
+client_right_grasp = actionlib.SimpleActionClient('/right_wsg/action/grasp', gripper_ActAction)
 
 #Define boradcasters
 br = tf.TransformBroadcaster() 
@@ -158,6 +162,9 @@ def move_group_service_callback(req):
     Launches a launch file
     """
     global to_launch
+    for group in moveit_groups:
+        moveit_groups[group].set_max_velocity_scaling_factor(req.speed_limit)
+        moveit_groups[group].set_max_acceleration_scaling_factor(req.accel_limit)
     resp = MoveGroupSrvResponse()
     for group in moveit_groups:
         moveit_groups[group].clear_pose_targets()
@@ -246,5 +253,40 @@ def get_arms_pose_callback(req):
 
 rospy.Service(get_arms_pose_service, ArmsPose, get_arms_pose_callback)
 
+
+def feedback_cb_left_move(fb):
+        global left_move_error
+        left_move_error = fb.error
+
+def feedback_cb_right_move(fb):
+        global right_move_error
+        right_move_error = fb.error
+
+def feedback_cb_left_grasp(fb):
+        global left_move_error
+        left_grasp_error = fb.error
+
+def feedback_cb_right_grasp(fb):
+        global left_move_error
+        right_grasp_error = fb.error
+
+def move_gripper(req):
+    goal = gripper_ActGoal()
+    goal.width = req.distance
+    goal.speed = 30
+    if req.arm == "right":
+        client_right_move.wait_for_server()
+        client_right_grasp.wait_for_server()
+        if req.command == 0:
+            client_right_move.send_goal(goal, feedback_cb = feedback_cb_right_move)
+        elif req.command == 1:
+            client_right_grasp.send_goal(goal, feedback_cb = feedback_cb_right_move)
+    elif req.arm == "left":
+        client_left_move.wait_for_server()
+        client_left_grasp.wait_for_server()
+        if req.command == 0:
+            client_left_move.send_goal(goal, feedback_cb = feedback_cb_left_move)
+        elif req.command == 1:
+            client_left_grasp.send_goal(goal, feedback_cb = feedback_cb_left_move)
 
 rospy.spin()

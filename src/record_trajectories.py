@@ -13,6 +13,7 @@ rospy.init_node('record_traj', anonymous=True)
 traj_record_service = '/trajectory_record'
 get_trajs_service = '/get_trajectories'
 exec_traj_service = '/execute_trajectory'
+del_traj_service = '/delete_trajectory'
 rate=rospy.Rate(0.25) #20Hz
 
 path_current = os.path.dirname(__file__)
@@ -65,6 +66,19 @@ def exec_traj_cb(req):
 	return resp
 
 rospy.Service(exec_traj_service, ExecTraj, exec_traj_cb)
+
+
+def del_traj_cb(req): 
+	resp = ExecTrajResponse()
+	resp.success = True
+	try:
+		resp.result = str(req.data) + " deleted successfully"
+	except:
+		resp.success = False
+		resp.result = "Error"
+	return resp
+
+rospy.Service(del_traj_service, ExecTraj, del_traj_cb)
 
 
 rospy.spin()
