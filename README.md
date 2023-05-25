@@ -18,17 +18,19 @@ This repository contains some of the nodes required to communicate with the REMO
 
   
 
--  **process_launch:** Launches the two following nodes:
+-  **process.launch:** Launches the two following nodes:
 
-	- **process_UI_server:** This node contains the action server of the robot process. Initially it request all the necessary information to perform the process to the CAD Platform (i.e., the sequence of operations, dimensions and structure of the handled wiring harness, coordinates of points of interest, etc.) and then it initializes the action server. The action server executes the different operations of the process, and it uses three variables (index, step1, and step2) to keep track of the status of the process, so it can be paused and resumed. All the motion planning functions are included in this file (cartesian speed control, synchronized dual-arm cartesian motion, motion stopping, etc.). This node can't be used directly with the UI as it is tailored for the Yaskawa robot and the ELVEZ use case, but it can be used as a reference to add this functionalities the system planners of other use cases.
+	- **process_UI_server.py:** This node contains the action server of the robot process. Initially it request all the necessary information to perform the process to the CAD Platform (i.e., the sequence of operations, dimensions and structure of the handled wiring harness, coordinates of points of interest, etc.) and then it initializes the action server. The action server executes the different operations of the process, and it uses three variables (index, step1, and step2) to keep track of the status of the process, so it can be paused and resumed. All the motion planning functions are included in this file (cartesian speed control, synchronized dual-arm cartesian motion, motion stopping, etc.). This node can't be used directly with the UI as it is tailored for the Yaskawa robot and the ELVEZ use case, but it can be used as a reference to add this functionalities the system planners of other use cases.
 
 	- **client_ELVEZ_test.py:** This node contains the action client of the robot process and different services to interact with the UI. These services allow the robot to start, stop, pause, resume, or run step by step (execute just the selected operation) the process. Additionally, it contains two topic publishers to indicate the UI the index of the current operation (within the whole process), and some logs to display in the UI. This node can be used directly with the UI, but it must be adapted to be compatible with the modifications in the **process_UI_server node**.
 
 	- **publish_feedback.py:** This node publishes contain publishers that publish UI feedback. In particular, it publishes the speed of each end effector. This node must be modified for the number of robots used and their specific groups names.
 
--  **fake_sensors:** Launches a node that publishes fake data for the force and tactile sensors.
+-  **fake_sensors.launch:** Launches a node that publishes fake data for the force and tactile sensors.
 
--  **record_traj:** Launches a node that simulates the services for recording and executing trajectories.
+-  **record_traj.launch:** Launches a node that simulates the services for recording and executing trajectories.
+
+-  **update_files.launch:** Launches the **load_files.py** node. This node contains services for loading files from an USB flash drive. These services are: */UI/get_usbs*, which retrieves the name of all the USBs connected to the computer; */UI/get_files_usb* which retrieves the name of all the files and directories contained inside the selected USB; and */UI/copy_file* to copy-paste the selected file of the USB into a local directory.
 
 # Additional considerations
 
