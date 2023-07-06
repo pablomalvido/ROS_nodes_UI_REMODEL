@@ -94,19 +94,21 @@ PC_op = ''
 step1 = 0
 step2 = 0
 
-real_robot = True
+real_robot = False
 
 if real_robot:
         speed_limit = 0.2
-        execute_grippers = False #CHANGE
-        force_controlled = False #CHANGE
+        execute_grippers = True
+        force_controlled = True
         speed_execution = 20 #mm/s
+        slow_speed_execution = 10
         speed_tension = 10
 else:
         speed_limit = 1
         execute_grippers = False
         force_controlled = False
         speed_execution = 50
+        slow_speed_execution = 30
         speed_tension = 20
 
 #Speed       
@@ -121,6 +123,8 @@ x_offset = 0.02
 z_offset2 = 0.02
 grasp_offset = 0.005
 force_offset = 0.01
+pick_grasp_offset = 0.01
+z_offset_pick = 0.05
 rot_center = Pose()
 rot_center_up = False
 
@@ -412,7 +416,6 @@ class ATC(object):
         self.eef_link_left = eef_link_left
         self.eef_link_right = eef_link_right
 
-        print("BB")
         #Remove other EEF collision objects from the scene
         attached_objects = scene.get_attached_objects()
         if len(attached_objects)>0:
@@ -868,7 +871,7 @@ class ATC(object):
         return new_tool, True
 
 
-    def correctPose(self, target_pose, arm_side, rotate = False, ATC_sign = -1, routing_app = False, route_arm = True):
+    def correctPose(self, target_pose, arm_side, rotate = False, ATC_sign = -1, routing_app = False, route_arm = True, picking_app = False):
         """
         Corrects a target pose. Moveit plans the movement to the last link of the move_group, that is in the wrist. This function corrects the target pose so
         The action frame of the EEF is the one that moves to the desired target pose.
@@ -883,7 +886,7 @@ class ATC(object):
         if rotate:
                 target_frame.M.DoRotX(3.14) #Z axis pointing inside the tool
 
-        if routing_app and (arm_side == "left" and route_arm) or (arm_side == "right" and not route_arm):
+        if (routing_app and ((arm_side == "left" and route_arm) or (arm_side == "right" and route_arm))) or picking_app:
                 target_frame.M.DoRotZ(math.pi)
 
         #Transform from EEF action frame to EEF base frame
@@ -901,6 +904,9 @@ class ATC(object):
                         frame_world_EEF_base = target_frame * get_inverse_frame(self.EEF_dict[self.EEF_left].EE_end_frame)
                 else:
                         frame_world_EEF_base = copy.deepcopy(target_frame)
+
+        # if picking_app: #and maybe depend on which arm too
+        #         frame_world_EEF_base.M.DoRotZ(math.pi)
 
         #Transform from EEF base frame to arm wrist
         frame_base_wrist = PyKDL.Frame()
@@ -3752,6 +3758,94 @@ def simplified_PC(op):
                        step2 = 0
                        process_actionserver.publish_feedback()
 
+def EC(op):
+        global motion_groups
+        global pick_grasp_offset
+        global z_offset_pick
+        global step1
+        global step2
+        global process_actionserver
+        print("Pick connector")
+        print("Step1: "+str(step1))
+        print("Step2: "+str(step2))
+        if op['spot']['side'] == "R":
+                pick_arm = "right"
+                fingers_size = ATC1.EEF_dict[ATC1.EEF_right].fingers_dim
+        else:
+                pick_arm = "left"
+                fingers_size = ATC1.EEF_dict[ATC1.EEF_left].fingers_dim
+        arm = motion_groups['arm_'+pick_arm]
+
+        prepick_pose = 'arm_'+pick_arm+'_prepick'
+        pick_pose = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']/2, - fingers_size[0]/2 - pick_grasp_offset, op["spot"]["height"]/2, 0, 0, 0])
+        pick_pose = get_shifted_pose(pick_pose, [0, 0, 0, 0, 0, -1.5708])
+        pick_pose_offset = get_shifted_pose(pick_pose, [0, 0, op["spot"]["height"]/2 + z_offset_pick, 0, 0, 0])
+        #visualize_keypoints_simple([pick_pose, pick_pose_offset, ATC1.correctPose(pick_pose, pick_arm, rotate = True, ATC_sign = -1, picking_app = True)], parent_frame="/base_link")
+
+        if step1 == 0:
+                if step2 == 0:
+                        #Move to predefined dual-arm config (pointing down)
+                        arms.set_named_target("arms_platform_5")
+                        move_group_async("arms")
+                        time.sleep(0.5)
+                
+                if step2 == 1:
+                        #Move torso to config
+                        torso.set_named_target("torso_combs")
+                        move_group_async("torso")
+                        time.sleep(0.5)
+
+                if step2 == 2:
+                        #Move pick_arm to predefined config (orientation for picking)
+                        arm.set_named_target(prepick_pose)
+                        move_group_async('arm_'+pick_arm)
+                        time.sleep(0.5)
+
+                if step2 == 3:
+                        #Move arm to grasp cable (with approach+retract)
+                        waypoints_EC1 = []
+                        init_pose = arm.get_current_pose().pose
+                        waypoints_EC1.append(init_pose)
+                        waypoints_EC1.append(ATC1.correctPose(pick_pose_offset, pick_arm, rotate = True, ATC_sign = -1, picking_app = True))
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_EC1], [speed_execution], arm_side=pick_arm)
+                        if success:
+                                execute_plan_async(route_group, plan)
+
+                if step2 == 4:
+                        waypoints_EC2 = []
+                        init_pose = arm.get_current_pose().pose
+                        waypoints_EC2.append(init_pose)
+                        waypoints_EC2.append(ATC1.correctPose(pick_pose, pick_arm, rotate = True, ATC_sign = -1, picking_app = True))
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_EC2], [slow_speed_execution], arm_side=pick_arm)
+                        if success:
+                                execute_plan_async(route_group, plan)
+
+                if step2 == 5:
+                        waypoints_EC3 = []
+                        init_pose = arm.get_current_pose().pose
+                        waypoints_EC3.append(init_pose)
+                        waypoints_EC3.append(ATC1.correctPose(pick_pose_offset, pick_arm, rotate = True, ATC_sign = -1, picking_app = True))
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_EC3], [slow_speed_execution], arm_side=pick_arm)
+                        if success:
+                                execute_plan_async(route_group, plan)
+
+                if step2 == 6:
+                        #Move to predefined dual-arm config
+                        arm.set_named_target(prepick_pose)
+                        move_group_async('arm_'+pick_arm)
+                        time.sleep(0.5)
+
+                if step2 == 7:
+                        arms.set_named_target("arms_platform_5")
+                        move_group_async("arms")
+                        time.sleep(0.5)
+
+                if step2 == 8:
+                       step1 += 1
+                       step2 = 0
+                       process_actionserver.publish_feedback()
+
+
 def move_home():
         print("Moving home")
         torso.set_named_target("torso_combs")
@@ -3772,8 +3866,11 @@ def execute_operation(op):
         global EEF_route
         global move_away2_sign
         global route_group
-        global group2        
-        if op['type'] == "PC":
+        global group2  
+        if op['type'] == "EC":
+                EC(op)              
+            
+        elif op['type'] == "PC":
                 PC_op = op
                 if op['spot']['side'] == "R":
                         route_arm = "right"
@@ -3793,7 +3890,7 @@ def execute_operation(op):
                         move_away2_sign = 1
                 simplified_PC(op)
                 
-        if op['type'] == "RC":
+        elif op['type'] == "RC":
                 route_cables(op, PC_op, route_arm)
 
 
@@ -3906,6 +4003,7 @@ class ElvezProcessClass(object):
 if __name__ == '__main__':
         #IMPORTANT: Modify all the named target poses to match the poses defined in your SRDF file
         #Define parameters of the tools for the ATC objects
+
         process_actionserver = ElvezProcessClass()
 
         eef_link_left = "left_tool_exchanger"
@@ -3926,17 +4024,17 @@ if __name__ == '__main__':
         gripper_right_ATC_pose = frame_to_pose(gripper_right_ATC_frame)
 
         gripper_end_frame_L = PyKDL.Frame() 
-        gripper_end_frame_L.p = PyKDL.Vector(0.1058, 0, 0.25215) 
+        gripper_end_frame_L.p = PyKDL.Vector(0.0998, 0, 0.2356) #F/T sensor
         gripper_end_frame_R = PyKDL.Frame() 
-        gripper_end_frame_R.p = PyKDL.Vector(-0.0908, 0, 0.22615) 
+        gripper_end_frame_R.p = PyKDL.Vector(0.0998, 0, 0.2536) #ATC
 
-        fingers_thickness = 0.008 #xleft_ATC_dist
+        fingers_thickness = 0.013 #xleft_ATC_dist
         fingers_width = 0.034 #y when fingers closed
-        fingers_tip_z = 0.022 #z distance from the fingers center to the tip
+        fingers_tip_z = 0.0153 #z distance from the fingers center to the tip
         fingers_dim = [fingers_thickness, fingers_width, fingers_tip_z]
         
-        EE_file_path_gripper_L = os.path.join(os.path.dirname(__file__), '../../motoman/motoman_sda10f_support/meshes/EE/gripper_side_simplified_left_bl_1.STL')
-        EE_file_path_gripper_R = os.path.join(os.path.dirname(__file__), '../../motoman/motoman_sda10f_support/meshes/EE/gripper_side_simplified_right_bl_1.STL')
+        EE_file_path_gripper_L = os.path.join(os.path.dirname(__file__), '../../motoman/motoman_sda10f_support/meshes/EE/gripper_simplified_left_Force.stl')
+        EE_file_path_gripper_R = os.path.join(os.path.dirname(__file__), '../../motoman/motoman_sda10f_support/meshes/EE/gripper_simplified_right_ATC.stl')
 
         gripper_left = EEF(EE_end_frame = gripper_end_frame_L, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_left_ATC_frame, name = "EEF_gripper_left", path = EE_file_path_gripper_L)
         gripper_right = EEF(EE_end_frame = gripper_end_frame_R, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_right_ATC_frame, name = "EEF_gripper_right", path = EE_file_path_gripper_R)
@@ -3946,8 +4044,7 @@ if __name__ == '__main__':
                 move_home()
 
         #Define the ATC instance
-        print("AA")
-        ATC1 = ATC(left_tool=gripper_left, right_tool=gripper_right, eef_link_left=eef_link_left, eef_link_right=eef_link_right, ATC_tools=[], left_ATC_angle=0.7854, right_ATC_angle=-0.7854, left_ATC_dist=0.09, right_ATC_dist=0.0905)
+        ATC1 = ATC(left_tool=gripper_left, right_tool=gripper_right, eef_link_left=eef_link_left, eef_link_right=eef_link_right, ATC_tools=[], left_ATC_angle=0.7854, right_ATC_angle=-0.7854, left_ATC_dist=0.09, right_ATC_dist=0.099)
 
         ##### Define target points
         #Get all operations: Pick cable from combs, Place cable in guide, Route cable through guide 1 and 2
@@ -3961,7 +4058,16 @@ if __name__ == '__main__':
         for ops in opsResult.data:
                 ops_temp = {}
                 ops_temp['type'] = ops.type
-                if ops.type == "PC":
+                if ops.type == "EC":
+                        rospy.wait_for_service('/ELVEZ_platform_handler/guide_info')
+                        my_service = rospy.ServiceProxy('/ELVEZ_platform_handler/guide_info', guide_info)
+                        guideReq = guide_infoRequest()
+                        guideReq.jig = ops.spot[0].jig
+                        guideReq.guide = ops.spot[0].id
+                        guideResult = my_service(guideReq)
+                        guide = guideResult.data
+                        ops_temp['spot'] = {'jig': ops.spot[0].jig, 'id': ops.spot[0].id, 'side': ops.spot[0].side, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'dimensions': guide.dimensions}
+                elif ops.type == "PC":
                         rospy.wait_for_service('/ELVEZ_platform_handler/guide_info')
                         my_service = rospy.ServiceProxy('/ELVEZ_platform_handler/guide_info', guide_info)
                         guideReq = guide_infoRequest()
@@ -3971,7 +4077,7 @@ if __name__ == '__main__':
                         guide = guideResult.data
                         ops_temp['spot'] = {'jig': ops.spot[0].jig, 'id': ops.spot[0].id, 'side': ops.spot[0].side, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions}
 
-                if ops.type == "RC":
+                elif ops.type == "RC":
                         ###Spot
                         rospy.wait_for_service('/ELVEZ_platform_handler/guide_info')
                         my_service = rospy.ServiceProxy('/ELVEZ_platform_handler/guide_info', guide_info)
@@ -4030,5 +4136,7 @@ if __name__ == '__main__':
         arm2 = arm_left
         EEF_route = ATC1.EEF_dict[ATC1.EEF_right].fingers_dim
         move_away2_sign = -1
+
+        print(ops_info)
 
         rospy.spin()
