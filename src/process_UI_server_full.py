@@ -94,12 +94,12 @@ PC_op = ''
 step1 = 0
 step2 = 0
 
-real_robot = False
+real_robot = True
 
 if real_robot:
-        speed_limit = 0.2
-        execute_grippers = True
-        force_controlled = True
+        speed_limit = 0.1
+        execute_grippers = False
+        force_controlled = False
         speed_execution = 20 #mm/s
         slow_speed_execution = 10
         speed_tension = 10
@@ -449,6 +449,7 @@ class ATC(object):
 
         #Add Left EEF
         if left_tool.name != "":
+            trash_pose = arm_left.get_current_pose().pose
             self.EEF_dict[left_tool.name] = left_tool
             EE_pose = geometry_msgs.msg.PoseStamped()
             EE_pose.header.frame_id = frame_id
@@ -3372,6 +3373,7 @@ def RC_insert_lift(op, route_arm):
                                 for wp in waypoints3_wrist:
                                         waypoints3_fingers.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                                 #print(waypoints3_fingers)
+                                waypoints3_fingers[0] = init_pose1
                                 plan, success = compute_cartesian_path_velocity_control([waypoints3_fingers], [speed_execution], arm_side=route_arm, step = 0.001)
                                 if success:
                                         execute_plan_async(route_group, plan)
@@ -3484,7 +3486,8 @@ def RC_insert_corner(op, route_arm):
                 final_insert_wp = ATC1.antiCorrectPose(init_pose1, route_arm, routing_app = True) 
                 prev_guide_top = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
                 waypoints2 = []
-                waypoints2.append(ATC1.correctPose(final_insert_wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                #waypoints2.append(ATC1.correctPose(final_insert_wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                waypoints2.append(init_pose1)
                 insert_up_wp = final_insert_wp
                 insert_up_wp.position.z = prev_guide_top.position.z
                 waypoints2.append(ATC1.correctPose(insert_up_wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
@@ -3540,7 +3543,7 @@ def RC_insert_grasp_corner(op, route_arm):
         next_guide_beginning = get_shifted_pose(op["next_guide"]["pose_corner"],[-EEF_route[0]/2, op["next_guide"]['gap']/2, z_offset2, 0, 0, 0])
         next_guide_top = get_shifted_pose(op["next_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
         next_guide_top_beginning = get_shifted_pose(op["next_guide"]["pose_corner"],[-EEF_route[0]/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
-        next_guide_top_beginning_route_offset1 = get_shifted_pose(op["next_guide"]["pose_corner"],[-max(EEF_route[0]/2 + EEF_route[1]/2), op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])        
+        next_guide_top_beginning_route_offset1 = get_shifted_pose(op["next_guide"]["pose_corner"],[-max(EEF_route[0]/2 + x_offset, EEF_route[1]/2), op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
         prev_guide_end = get_shifted_pose(op["prev_guide"]["pose_corner"],[EEF_route[0]/2, op["next_guide"]['gap']/2, 0, 0, 0, 0])
         
         cable_dir_angle = math.atan2(next_guide_top_beginning_route_offset1.position.y - prev_guide_end.position.y, next_guide_top_beginning_route_offset1.position.x - prev_guide_end.position.x)
@@ -3573,6 +3576,7 @@ def RC_insert_grasp_corner(op, route_arm):
                 waypoints3 = []
                 for wp in waypoints3_wrist:
                         waypoints3.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1))
+                waypoints3[0] = init_pose1
                 plan, success = compute_cartesian_path_velocity_control([waypoints3], [speed_execution], arm_side=route_arm)
                 if success:
                         execute_plan_async(route_group, plan)
@@ -4033,8 +4037,8 @@ if __name__ == '__main__':
         fingers_tip_z = 0.0153 #z distance from the fingers center to the tip
         fingers_dim = [fingers_thickness, fingers_width, fingers_tip_z]
         
-        EE_file_path_gripper_L = os.path.join(os.path.dirname(__file__), '../../motoman/motoman_sda10f_support/meshes/EE/gripper_simplified_left_Force.stl')
-        EE_file_path_gripper_R = os.path.join(os.path.dirname(__file__), '../../motoman/motoman_sda10f_support/meshes/EE/gripper_simplified_right_ATC.stl')
+        EE_file_path_gripper_L = os.path.join(os.path.dirname(__file__), '../../../../robot_ws/src/motoman/motoman_sda10f_support/meshes/EE/gripper_simplified_left_Force.stl')
+        EE_file_path_gripper_R = os.path.join(os.path.dirname(__file__), '../../../../robot_ws/src/motoman/motoman_sda10f_support/meshes/EE/gripper_simplified_right_ATC.stl')
 
         gripper_left = EEF(EE_end_frame = gripper_end_frame_L, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_left_ATC_frame, name = "EEF_gripper_left", path = EE_file_path_gripper_L)
         gripper_right = EEF(EE_end_frame = gripper_end_frame_R, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_right_ATC_frame, name = "EEF_gripper_right", path = EE_file_path_gripper_R)
