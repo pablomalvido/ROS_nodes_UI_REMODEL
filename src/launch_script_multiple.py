@@ -3,6 +3,7 @@
 import sys
 import copy
 import rospy 
+import rospkg
 import time
 import roslaunch
 from std_srvs.srv import Trigger, TriggerResponse
@@ -11,6 +12,7 @@ from UI_nodes_pkg.msg import *
 
 rospy.init_node('launch_node', anonymous=True)
 rate = rospy.Rate(10)
+rospack = rospkg.RosPack()
 
 """
 uuid = roslaunch.rlutil.get_or_generate_uuid(None, False)
@@ -80,7 +82,8 @@ while not rospy.is_shutdown():
             roslaunch.configure_logging(uuid)
             launch_name = to_launch_copy_i.split("/")[-1]
             package_name = to_launch_copy_i[:-len(launch_name)-1]
-            file_name = "/home/remodel/catkin_ws/src/" + package_name + "/launch/" + launch_name + ".launch"
+            full_pkg_path = str(rospack.get_path(package_name))
+            file_name = full_pkg_path + "/launch/" + launch_name + ".launch"
             launch_[to_launch_copy_i] = roslaunch.parent.ROSLaunchParent(uuid, [file_name], sigint_timeout=1.5, sigterm_timeout=0.5)
             launch_[to_launch_copy_i].start()
             to_launch.remove(to_launch_copy_i)
