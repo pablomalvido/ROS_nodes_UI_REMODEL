@@ -3,6 +3,7 @@ import sys
 import os
 import copy
 import rospy
+import rospkg
 import PyKDL 
 import time
 import moveit_commander
@@ -22,17 +23,31 @@ import tf
 from elvez_pkg.msg import *
 from elvez_pkg.srv import *
 from UI_nodes_pkg.msg import *
+from UI_nodes_pkg.srv import *
 import actionlib
 from actionlib_msgs.msg import GoalStatusArray
 from rviz_test.msg import gripper_ActFeedback, gripper_ActResult, gripper_ActAction, gripper_ActGoal
 from UI_nodes_pkg.msg import process_UIFeedback, process_UIResult, process_UIAction, process_UIGoal
+from vision_pkg_full_demo.srv import *
+from rosapi.srv import *
 
 
 #ROS init
 moveit_commander.roscpp_initialize(sys.argv)
 rospy.init_node('elvez_process_action_server', anonymous=True)
+rospack = rospkg.RosPack()
 mode_publisher = rospy.Publisher('/UI/mode', String, queue_size=1)
+confirmation_received = False
+confirmation_msg = 'N'
 logs_publisher = rospy.Publisher('/UI/logs', String, queue_size=1)
+confirmation_publisher = rospy.Publisher('/UI/confirm_req', String, queue_size=1)
+def callback_confirm(msg):
+    global confirmation_received
+    global confirmation_msg
+    confirmation_msg = msg.data
+    confirmation_received = True
+confirmation_subscriber = rospy.Subscriber('/UI/confirm_res', String, callback_confirm) 
+
 
 #Defines the movegroups. 
 #IMPORTANT: These must be the name of these variables and move_groups. Otherwise, additional modifications of the code will be required.
@@ -60,6 +75,8 @@ torso.stop()
 status_movement = 0
 status_movement2 = 0
 stop_mov = False
+
+ops_info_text=[]
 
 # def callback_left(status):
 #     global status_movement_left 
@@ -89,20 +106,28 @@ def get_mode_callback(req):
 
 rospy.Service("/UI/get_mode", Trigger, get_mode_callback)
 
+#Initialization
 modeUI = 'Idle'
 PC_op = ''
 step1 = 0
 step2 = 0
 
-real_robot = False
+rospy.wait_for_service('/rosapi/nodes')
+get_nodes_srv = rospy.ServiceProxy('rosapi/nodes', Nodes)
+active_nodes = get_nodes_srv(NodesRequest()).nodes
+if all(x in ['/io_relay','/joint_state','/joint_trajectory_action','/move_group','/motion_streaming_interface','/robot_state_publisher'] for x in active_nodes):
+        real_robot = True
+else:
+        real_robot = False 
 
 if real_robot:
-        speed_limit = 0.2
-        execute_grippers = True
-        force_controlled = True
+        speed_limit = 0.1
+        execute_grippers = False #True
+        force_controlled = False #True
         speed_execution = 20 #mm/s
         slow_speed_execution = 10
         speed_tension = 10
+        use_camera = True
 else:
         speed_limit = 1
         execute_grippers = False
@@ -110,6 +135,7 @@ else:
         speed_execution = 50
         slow_speed_execution = 30
         speed_tension = 20
+        use_camera = False
 
 #Speed       
 arm_left.set_max_velocity_scaling_factor(speed_limit)
@@ -125,6 +151,7 @@ grasp_offset = 0.005
 force_offset = 0.01
 pick_grasp_offset = 0.01
 z_offset_pick = 0.05
+z_offset_photo = 0.1
 rot_center = Pose()
 rot_center_up = False
 
@@ -136,6 +163,9 @@ open_distance = 105
 slide_distance = 25
 grasp_distance = 15.0
 gripper_speed = 30
+
+#Other
+grasp_point_global = [0,0]
 
 #INITIALIZE GRIPPER ACTIONS
 if execute_grippers:
@@ -168,7 +198,7 @@ if execute_grippers:
 
 class EEF(object):
     """This class defines an end effector"""
-    def __init__(self, EE_end_frame=PyKDL.Frame(), x=0, y=0, z=0, ATC_frame=PyKDL.Frame(), name="", path="", fingers_dim = [0,0,0]):
+    def __init__(self, EE_end_frame=PyKDL.Frame(), EE_end_frame2=PyKDL.Frame(), x=0, y=0, z=0, ATC_frame=PyKDL.Frame(), name="", path="", fingers_dim = [0,0,0]):
         """
         - EE_end_frame: Transform from the EEF base frame (the ATC part of the tool) to its actuation frame [PyKDL.Frame]
         - x: Tool size in x dimension [float]
@@ -179,6 +209,7 @@ class EEF(object):
         - path: Path of the stl model of the tool [string]
         """
         self.EE_end_frame = EE_end_frame
+        self.EE_end_frame2 = EE_end_frame2
         self.x = x
         self.y = y
         self.z = z
@@ -449,6 +480,7 @@ class ATC(object):
 
         #Add Left EEF
         if left_tool.name != "":
+            trash_pose = arm_left.get_current_pose().pose
             self.EEF_dict[left_tool.name] = left_tool
             EE_pose = geometry_msgs.msg.PoseStamped()
             EE_pose.header.frame_id = frame_id
@@ -608,21 +640,21 @@ class ATC(object):
         print("Moving robot to ATC position")
         arms.set_named_target("arms_platform_3")
         arms.go(wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
         torso.set_named_target("torso_combs")
         torso.go(wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         if arm_side == "right":
                 arm_left.set_named_target("arm_left_down")
                 arm_left.go(wait=True)
-                time.sleep(0.5)
+                rospy.sleep(0.5)
                 arm_right.set_named_target("arm_right_ATC")
                 arm_right.go(wait=True)
-                time.sleep(0.5)
+                rospy.sleep(0.5)
                 torso.set_named_target("torso_ATC")
                 torso.go(wait=True)
-                time.sleep(0.5)
+                rospy.sleep(0.5)
                 change_arm = arm_right
                 current_tool = self.EEF_right
                 eef_link_arm = self.eef_link_right
@@ -633,13 +665,13 @@ class ATC(object):
         else:
                 arm_right.set_named_target("arm_right_down")
                 arm_right.go(wait=True)
-                time.sleep(0.5)
+                rospy.sleep(0.5)
                 arm_left.set_named_target("arm_left_ATC")
                 arm_left.go(wait=True)
-                time.sleep(0.5)
+                rospy.sleep(0.5)
                 torso.set_named_target("torso_ATC")
                 torso.go(wait=True)
-                time.sleep(0.5)
+                rospy.sleep(0.5)
                 change_arm = arm_left
                 current_tool = self.EEF_left
                 eef_link_arm = self.eef_link_left
@@ -755,7 +787,7 @@ class ATC(object):
         #plan, success = compute_cartesian_path_velocity_control([approach_leave_waypoints_wrist], [20], arm_side = arm_side, max_linear_accel = 100.0)
         plan, fraction = change_arm.compute_cartesian_path(approach_leave_waypoints_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Approach to ATC station 2")
         plan, success = compute_cartesian_path_velocity_control([approach_leave_waypoints2_wrist], [25], arm_side = arm_side, max_linear_accel = 50.0)
@@ -763,7 +795,7 @@ class ATC(object):
                 return current_tool, False
         #plan, fraction = change_arm.compute_cartesian_path(approach_leave_waypoints2_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Insert tool")
         plan, success = compute_cartesian_path_velocity_control([leave_tool_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
@@ -771,17 +803,17 @@ class ATC(object):
                 return current_tool, False
         #plan, fraction = change_arm.compute_cartesian_path(leave_tool_waypoints_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Detaching gripper")
         scene.remove_attached_object(eef_link_arm, name=current_tool)
         self.wait_update_object(current_tool, EE_is_attached=False, EE_is_known=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
         sceneReq = PlanningScene()
         sceneReq.allowed_collision_matrix = original_acm
         sceneReq.is_diff = True
         sceneResponse = update_scene_service(sceneReq) #Still allow collision between the ATC and the tool (adjacent)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Retracting arm")
         plan, success = compute_cartesian_path_velocity_control([retract_leave_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
@@ -789,17 +821,17 @@ class ATC(object):
                 return current_tool, False
         #plan, fraction = change_arm.compute_cartesian_path(retract_leave_waypoints_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Initial position")
         plan, fraction = change_arm.compute_cartesian_path(retract_initial_waypoints_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Approach pick tool")
         plan, fraction = change_arm.compute_cartesian_path(approach_pick_waypoints_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Approach pick tool 2")
         plan, success = compute_cartesian_path_velocity_control([approach_pick_waypoints2_wrist], [25], arm_side = arm_side, max_linear_accel = 50.0)
@@ -807,12 +839,12 @@ class ATC(object):
                 return current_tool, False
         #plan, fraction = change_arm.compute_cartesian_path(approach_pick_waypoints2_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
         sceneReq = PlanningScene()
         sceneReq.allowed_collision_matrix = new_acm
         sceneReq.is_diff = True
         sceneResponse = update_scene_service(sceneReq) #Allow collision between ATC and the new_tool before approaching (adjacent)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Pick tool")
         plan, success = compute_cartesian_path_velocity_control([pick_tool_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
@@ -820,7 +852,7 @@ class ATC(object):
                 return current_tool, False
         #plan, fraction = change_arm.compute_cartesian_path(pick_tool_waypoints_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Attaching gripper")
         rospy.sleep(0.5)
@@ -831,7 +863,7 @@ class ATC(object):
         sceneReq.is_diff = True
         sceneResponse = update_scene_service(sceneReq) #Update ACM after attaching the new tool
         self.ACM = new_acm
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Retracting arm")
         plan, success = compute_cartesian_path_velocity_control([retract_pick_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
@@ -839,7 +871,7 @@ class ATC(object):
                 return new_tool, False
         #plan, fraction = change_arm.compute_cartesian_path(retract_pick_waypoints_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Retracting arm 2")
         plan, success = compute_cartesian_path_velocity_control([retract_pick_waypoints2_wrist], [25], arm_side = arm_side, max_linear_accel = 50.0)
@@ -847,20 +879,20 @@ class ATC(object):
                 return new_tool, False
         #plan, fraction = change_arm.compute_cartesian_path(retract_pick_waypoints2_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Coming back to initial ATC position")
         plan, fraction = change_arm.compute_cartesian_path(final_waypoints_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         print("Moving robot to final position, ready to rotate torso")
         torso.set_named_target("torso_combs")
         torso.go(wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
         arms.set_named_target("arms_platform_4")
         arms.go(wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
         #Update the tool name
         if arm_side == "left":
@@ -871,7 +903,7 @@ class ATC(object):
         return new_tool, True
 
 
-    def correctPose(self, target_pose, arm_side, rotate = False, ATC_sign = -1, routing_app = False, route_arm = True, picking_app = False):
+    def correctPose(self, target_pose, arm_side, rotate = False, ATC_sign = -1, routing_app = False, route_arm = True, picking_app = False, secondary_frame = False):
         """
         Corrects a target pose. Moveit plans the movement to the last link of the move_group, that is in the wrist. This function corrects the target pose so
         The action frame of the EEF is the one that moves to the desired target pose.
@@ -879,6 +911,7 @@ class ATC(object):
         - arm_side: Arm side in which to change the tool ["left" or "right"]
         - rotate: True to rotate the pose 180 degrees in the EEF X axis. Useful to correct the Z axis direction of the EEF [bool]
         - ATC_sign: Determines the direction of the EEF base frame angle and distance difference with the arm wrist frame [1 or -1]
+        - Secondary_frame: Uses the secondary EEF action frame (in the case of the grippers, the nail)
         """
         target_frame = pose_to_frame(target_pose)
 
@@ -894,14 +927,20 @@ class ATC(object):
                 ATC_dist = self.right_ATC_dist
                 ATC_angle = self.right_ATC_angle
                 if self.EEF_right != "" and self.EEF_right != "None":
-                        frame_world_EEF_base = target_frame * get_inverse_frame(self.EEF_dict[self.EEF_right].EE_end_frame)
+                        if not secondary_frame:
+                                frame_world_EEF_base = target_frame * get_inverse_frame(self.EEF_dict[self.EEF_right].EE_end_frame)
+                        else:
+                                frame_world_EEF_base = target_frame * get_inverse_frame(self.EEF_dict[self.EEF_right].EE_end_frame2)
                 else:
                         frame_world_EEF_base = copy.deepcopy(target_frame)
         else:
                 ATC_dist = self.left_ATC_dist
                 ATC_angle = self.left_ATC_angle
                 if self.EEF_left != "" and self.EEF_left != "None":
-                        frame_world_EEF_base = target_frame * get_inverse_frame(self.EEF_dict[self.EEF_left].EE_end_frame)
+                        if not secondary_frame:
+                                frame_world_EEF_base = target_frame * get_inverse_frame(self.EEF_dict[self.EEF_left].EE_end_frame)
+                        else:
+                                frame_world_EEF_base = target_frame * get_inverse_frame(self.EEF_dict[self.EEF_left].EE_end_frame2)                                
                 else:
                         frame_world_EEF_base = copy.deepcopy(target_frame)
 
@@ -3027,7 +3066,7 @@ def RC_insert(op, route_arm):
                 plan, success = compute_cartesian_path_velocity_control([waypoints12], [speed_tension], arm_side=route_arm)
                 if success:
                         success = execute_force_control(arm_side = route_arm, plan = plan)
-                time.sleep(0.5)
+                rospy.sleep(0.5)
                 force_controlled = False
 
 
@@ -3372,6 +3411,7 @@ def RC_insert_lift(op, route_arm):
                                 for wp in waypoints3_wrist:
                                         waypoints3_fingers.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                                 #print(waypoints3_fingers)
+                                waypoints3_fingers[0] = init_pose1
                                 plan, success = compute_cartesian_path_velocity_control([waypoints3_fingers], [speed_execution], arm_side=route_arm, step = 0.001)
                                 if success:
                                         execute_plan_async(route_group, plan)
@@ -3484,7 +3524,8 @@ def RC_insert_corner(op, route_arm):
                 final_insert_wp = ATC1.antiCorrectPose(init_pose1, route_arm, routing_app = True) 
                 prev_guide_top = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
                 waypoints2 = []
-                waypoints2.append(ATC1.correctPose(final_insert_wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                #waypoints2.append(ATC1.correctPose(final_insert_wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                waypoints2.append(init_pose1)
                 insert_up_wp = final_insert_wp
                 insert_up_wp.position.z = prev_guide_top.position.z
                 waypoints2.append(ATC1.correctPose(insert_up_wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
@@ -3540,7 +3581,7 @@ def RC_insert_grasp_corner(op, route_arm):
         next_guide_beginning = get_shifted_pose(op["next_guide"]["pose_corner"],[-EEF_route[0]/2, op["next_guide"]['gap']/2, z_offset2, 0, 0, 0])
         next_guide_top = get_shifted_pose(op["next_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
         next_guide_top_beginning = get_shifted_pose(op["next_guide"]["pose_corner"],[-EEF_route[0]/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
-        next_guide_top_beginning_route_offset1 = get_shifted_pose(op["next_guide"]["pose_corner"],[-max(EEF_route[0]/2 + EEF_route[1]/2), op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])        
+        next_guide_top_beginning_route_offset1 = get_shifted_pose(op["next_guide"]["pose_corner"],[-max(EEF_route[0]/2 + x_offset, EEF_route[1]/2), op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])        
         prev_guide_end = get_shifted_pose(op["prev_guide"]["pose_corner"],[EEF_route[0]/2, op["next_guide"]['gap']/2, 0, 0, 0, 0])
         
         cable_dir_angle = math.atan2(next_guide_top_beginning_route_offset1.position.y - prev_guide_end.position.y, next_guide_top_beginning_route_offset1.position.x - prev_guide_end.position.x)
@@ -3573,6 +3614,7 @@ def RC_insert_grasp_corner(op, route_arm):
                 waypoints3 = []
                 for wp in waypoints3_wrist:
                         waypoints3.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1))
+                waypoints3[0] = init_pose1
                 plan, success = compute_cartesian_path_velocity_control([waypoints3], [speed_execution], arm_side=route_arm)
                 if success:
                         execute_plan_async(route_group, plan)
@@ -3704,6 +3746,11 @@ def simplified_PC(op):
         global step1
         global step2
         global process_actionserver
+        global slow_speed_execution
+        global speed_execution
+        global speed_tension
+        global force_controlled
+
         print("PC simplified")
         print("STEP1: " +str(step1)+" STEP2: " +str(step2))
         if step1 == 0:
@@ -3712,7 +3759,7 @@ def simplified_PC(op):
                         waypoints_PC = []
                         init_pose = arm.get_current_pose().pose
                         waypoints_PC.append(init_pose)
-                        mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset*2+EEF_route[0]/2, op["spot"]['gap']/2, op["spot"]["height"] + 2*z_offset + EEF_route[2], 0, 0, 0])
+                        mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, op["spot"]['gap']/2, op["spot"]["height"] + 2*z_offset + EEF_route[2], 0, 0, 0])
                         corrected_pose = ATC1.correctPose(mold_up_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = True)
                         waypoints_PC.append(corrected_pose)
                         pose_other_arm = arm2.get_current_pose().pose
@@ -3736,22 +3783,27 @@ def simplified_PC(op):
                         waypoints_PC2.append(init_pose)
                         mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, op["spot"]['gap']/2, 0, 0, 0, 0])
                         waypoints_PC2.append(ATC1.correctPose(mold_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
-                        plan, success = compute_cartesian_path_velocity_control([waypoints_PC2], [speed_execution], arm_side=route_arm)
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_PC2], [slow_speed_execution], arm_side=route_arm)
                         if success:
                                 execute_plan_async(route_group, plan)
                                 # arm.execute(plan, wait=True)
 
                 if step2 == 2:
-                        if execute_grippers:
-                                goal = gripper_ActGoal()
-                                goal.width = slide_distance
-                                goal.speed = gripper_speed
-                                if route_arm=="right":
-                                        client_right_move.send_goal(goal, feedback_cb = feedback_cb_right_move)
-                                elif route_arm=="left":
-                                        client_left_move.send_goal(goal, feedback_cb = feedback_cb_left_move)
-                                rospy.sleep(2.0)
-                        step2+=1
+                        waypoints_PC3 = []
+                        init_pose = arm.get_current_pose().pose
+                        waypoints_PC3.append(init_pose)
+                        #Connector insertion params
+                        combs_width = 0.001
+                        mold_width = 0.001
+                        extra_pull = 0.003
+                        pull_pose = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2+pick_grasp_offset+combs_width-mold_width+extra_pull, op["spot"]['gap']/2, 0, 0, 0, 0])
+                        waypoints_PC3.append(ATC1.correctPose(pull_pose, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                        force_controlled = True
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_PC3], [speed_tension], arm_side=route_arm)
+                        if success:
+                                success = execute_force_control(arm_side = route_arm, plan = plan)
+                        rospy.sleep(0.5)
+                        force_controlled = False
 
                 if step2 == 3:
                        step1 += 1
@@ -3787,19 +3839,19 @@ def EC(op):
                         #Move to predefined dual-arm config (pointing down)
                         arms.set_named_target("arms_platform_5")
                         move_group_async("arms")
-                        time.sleep(0.5)
+                        rospy.sleep(0.5)
                 
                 if step2 == 1:
                         #Move torso to config
                         torso.set_named_target("torso_combs")
                         move_group_async("torso")
-                        time.sleep(0.5)
+                        rospy.sleep(0.5)
 
                 if step2 == 2:
                         #Move pick_arm to predefined config (orientation for picking)
                         arm.set_named_target(prepick_pose)
                         move_group_async('arm_'+pick_arm)
-                        time.sleep(0.5)
+                        rospy.sleep(0.5)
 
                 if step2 == 3:
                         #Move arm to grasp cable (with approach+retract)
@@ -3833,12 +3885,12 @@ def EC(op):
                         #Move to predefined dual-arm config
                         arm.set_named_target(prepick_pose)
                         move_group_async('arm_'+pick_arm)
-                        time.sleep(0.5)
+                        rospy.sleep(0.5)
 
                 if step2 == 7:
                         arms.set_named_target("arms_platform_5")
                         move_group_async("arms")
-                        time.sleep(0.5)
+                        rospy.sleep(0.5)
 
                 if step2 == 8:
                        step1 += 1
@@ -3846,16 +3898,199 @@ def EC(op):
                        process_actionserver.publish_feedback()
 
 
+def separate_cables(op, route_arm):
+        global z_offset_photo
+        global z_offset
+        global x_offset
+        global motion_groups
+        global speed_execution
+        global grasp_point_global
+        global use_camera
+        global confirmation_received
+        global confirmation_msg
+        global step1
+        global step2
+        global process_actionserver
+        global stop_mov
+
+        rospy.wait_for_service('/vision/grasp_point_determination_srv')
+        grasp_point_srv = rospy.ServiceProxy('/vision/grasp_point_determination_srv', cablesSeparation)
+        rospy.wait_for_service('/vision/check_cable_separation_srv')
+        eval_grasp_srv = rospy.ServiceProxy('/vision/check_cable_separation_srv', cablesSeparation)
+        
+        if route_arm == "right":
+                fingers_size = ATC1.EEF_dict[ATC1.EEF_right].fingers_dim
+        else:
+                fingers_size = ATC1.EEF_dict[ATC1.EEF_left].fingers_dim
+
+        route_group = 'arm_'+route_arm
+        if step1 == 0:
+                if step2 == 0:
+                        #Open gripper
+
+                        arm = motion_groups['arm_'+route_arm]
+                        init_pose = arm.get_current_pose().pose
+                        retreat_z = get_shifted_pose(op["spot"][0]["pose_corner"], [0, 0, op["spot"][0]["height"] + z_offset_photo + fingers_dim[2], 0, 0, 0])
+                        retreat_z_corrected = ATC1.correctPose(retreat_z, route_arm, rotate = True, routing_app = True, ATC_sign = -1)
+                        new_pose = copy.deepcopy(init_pose)
+                        new_pose.position.z = retreat_z_corrected.position.z
+                        waypoints1 = [init_pose, new_pose]
+                        plan, success = compute_cartesian_path_velocity_control([waypoints1], [speed_execution], arm_side=route_arm)
+                        if success:
+                                execute_plan_async(route_group, plan) 
+
+                if step2 == 1:
+                        repeat = True
+                        pixel_D_param = 3
+                        forward_param = False
+                        while repeat:
+                                if use_camera:
+                                        rospy.wait_for_service('/OAK/capture_img')
+                                        capture_img_srv = rospy.ServiceProxy('/OAK/capture_img', Trigger)
+                                        capture_img_res = capture_img_srv(TriggerRequest())
+                                        img_cables_path = capture_img_res.message
+                                        if not capture_img_res.success:
+                                                stop_function("Failed to take the cables image")
+                                else:
+                                        img_cables_path = str(rospack.get_path('vision_pkg_full_demo')) + '/imgs/Image_cables_0.jpg'
+
+                                msg_log = String()
+                                msg_log.data = "Calculating grasp point..."
+                                logs_publisher.publish(msg_log)
+                                grasp_point_req = cablesSeparationRequest()
+                                grasp_point_req.img_path = img_cables_path
+                                grasp_point_req.wh_id = op['WH']
+                                grasp_point_req.separated_cable_index = op['label']
+                                grasp_point_req.pixel_D = pixel_D_param
+                                grasp_point_req.forward = forward_param
+                                grasp_point_req.iteration = False
+                                grasp_point_req.grasp_point_eval_mm = [0,0]
+                                grasp_point_req.analyzed_length = 100
+                                grasp_point_req.simplified = True
+                                grasp_point_req.visualize = False
+                                grasp_point_res = grasp_point_srv(grasp_point_req)
+                                grasp_point_global = [float(grasp_point_res.grasp_point[0])/1000, float(grasp_point_res.grasp_point[1])/1000]
+                                msg_log.data = "Grasp point calculated"
+                                logs_publisher.publish(msg_log)
+
+                                repeat = False
+                                img_name = img_cables_path.split('/')[-1]
+                                confirm_msg = String()
+                                confirm_msg.data = img_cables_path[:-len(img_name)]+'Grasp_point_'+img_name
+                                confirmation_publisher.publish(confirm_msg)
+                                while not confirmation_received: #Wait until the UI accepts
+                                       rospy.sleep(0.1)
+                                if os.path.exists("/home/remodel/UI-REMODEL/src/assets/img/grasp_image.jpg"):
+                                        os.remove("/home/remodel/UI-REMODEL/src/assets/img/grasp_image.jpg")
+                                confirmation_received = False
+                                if confirmation_msg == "N":
+                                        stop_function("Grasp canceled")
+                                elif confirmation_msg == "R":
+                                        pixel_D_param += 1
+                                        forward_param = False
+                                        repeat = True
+
+                        if grasp_point_res.success:
+                                print(grasp_point_global)
+                                grasp_point = get_shifted_pose(op["spot"][0]["pose_corner"], [grasp_point_global[0], op["spot"][0]['gap']/2, op["spot"][0]["height"] + grasp_point_global[1], 0, 0, 0])
+                                grasp_point_offset = get_shifted_pose(grasp_point, [0, 0, z_offset - grasp_point_global[1], 0, 0, 0])
+                                grasp_point_corrected = ATC1.correctPose(grasp_point, route_arm, rotate = True, routing_app = True, ATC_sign = -1, secondary_frame = True)
+                                grasp_point_offset_corrected = ATC1.correctPose(grasp_point_offset, route_arm, rotate = True, routing_app = True, ATC_sign = -1, secondary_frame = True)                        
+                                init_pose = arm.get_current_pose().pose
+                                waypoints2 = [init_pose, grasp_point_offset_corrected, grasp_point_corrected]
+                                print("INIT: " + str(init_pose))
+                                print("GRASP: " + str(grasp_point_corrected))
+                                print(grasp_point_global)
+                                plan, success = compute_cartesian_path_velocity_control([waypoints2], [speed_execution], arm_side=route_arm)
+                                if success:
+                                        execute_plan_async(route_group, plan)
+                        else:
+                                stop_function("Grasp point determination failed")
+                                        
+                if step2 == 2:
+                        #Close gripper to slide cables
+
+                        rospy.sleep(1)
+                        init_pose = arm.get_current_pose().pose
+                        grasp_point_lift = get_shifted_pose(grasp_point_offset, [x_offset, 0, z_offset, 0, 0, 0])
+                        grasp_point_lift_corrected = ATC1.correctPose(grasp_point_lift, route_arm, rotate = True, routing_app = True, ATC_sign = -1, secondary_frame = True)
+                        waypoints3 = [init_pose, grasp_point_lift_corrected]
+                        plan, success = compute_cartesian_path_velocity_control([waypoints3], [speed_execution], arm_side=route_arm)
+                        if success:
+                                execute_plan_async(route_group, plan)
+                        rospy.sleep(0.5)
+
+                if step2 == 3:
+                        if use_camera:
+                                rospy.wait_for_service('/OAK/capture_img')
+                                capture_img_srv = rospy.ServiceProxy('/OAK/capture_img', Trigger)
+                                capture_img_res = capture_img_srv(TriggerRequest())
+                                img_cables_path = capture_img_res.message
+                                if not capture_img_res.success:
+                                        stop_function("Failed to take the cables image")
+                        else:
+                                img_cables_path = str(rospack.get_path('vision_pkg_full_demo')) + '/imgs/Image_cables_1.jpg'
+
+                        msg_log = String()
+                        msg_log.data = "Evaluating cable separation..."
+                        logs_publisher.publish(msg_log)
+                        grasp_eval_req = cablesSeparationRequest()
+                        grasp_eval_req.img_path = img_cables_path
+                        grasp_eval_req.wh_id = op['WH']
+                        grasp_eval_req.separated_cable_index = op['label']
+                        grasp_eval_req.pixel_D = 4
+                        grasp_eval_req.forward = False
+                        grasp_eval_req.iteration = False
+                        grasp_eval_req.grasp_point_eval_mm = [int((2*z_offset)*1000), int((x_offset+grasp_point_global[0])*1000)]
+                        grasp_eval_req.analyzed_length = 150
+                        grasp_eval_req.simplified = True
+                        grasp_eval_req.visualize = False
+                        grasp_eval_res = eval_grasp_srv(grasp_eval_req) 
+                        msg_log.data = grasp_eval_res.result
+                        logs_publisher.publish(msg_log)
+                        print(grasp_eval_res.result)
+
+                        if grasp_eval_res.success and grasp_eval_res.separation_success:
+                                step1 += 1
+                                step2 = 0
+                                process_actionserver.publish_feedback()
+                        else:
+                                if grasp_eval_res.success:
+                                        stop_function("Cable separation was not succesful")
+                                else:
+                                        stop_function("Grasp evaluation failed")
+
+
+def grasp_cables(op, route_arm):
+        global step1
+        global step2
+        global process_actionserver
+        print("grasp cables")
+        #ToDo
+        step1 += 1
+        step2 = 0
+        process_actionserver.publish_feedback()
+
+
+def stop_function(message):
+        global stop_mov
+        stop_mov = True
+        msg_log = String()
+        msg_log.data = message
+        logs_publisher.publish(msg_log)
+        exit()
+
+
 def move_home():
         print("Moving home")
         torso.set_named_target("torso_combs")
         move_group_async("torso")
         # torso.go(wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
         arms.set_named_target("arms_platform_3_corrected")
         move_group_async("arms")
         # arms.go(wait=True)
-        time.sleep(0.5)
+        rospy.sleep(0.5)
 
 
 def execute_operation(op):
@@ -3892,6 +4127,12 @@ def execute_operation(op):
                 
         elif op['type'] == "RC":
                 route_cables(op, PC_op, route_arm)
+
+        elif op['type'] == "SC":
+               separate_cables(op, route_arm)
+
+        elif op['type'] == "GC":
+               grasp_cables(op, route_arm)
 
 
 ##################################################################################################################
@@ -3970,7 +4211,7 @@ class ElvezProcessClass(object):
                                         else:
                                               print("Paused in: " + str(self._index) + ", step1: " + str(step1) + ", step2: " + str(step2)) 
                                         self.publish_feedback()
-                                        time.sleep(1)
+                                        rospy.sleep(1)
                 else:
                         execute_operation(ops_info[self._index])
                         if not stop_mov:
@@ -3997,6 +4238,22 @@ class ElvezProcessClass(object):
                         self._result.success = success
                         rospy.loginfo('Successful test')
                         self._as.set_succeeded(self._result) #Set the action as succeded and sent the result to the client
+
+def all_operations_callback(req): 
+        """
+        Service that returns operations to perform
+        """
+        global ops_info_text
+        resp = StringArrayResponse()
+        resp.success = False
+    
+        for op in ops_info_text:
+                resp.msg.append(op)
+
+        resp.success = True
+        return resp
+
+rospy.Service('/process/all_operations', StringArray, all_operations_callback)
 
 
 ##################################################################################################################
@@ -4025,19 +4282,23 @@ if __name__ == '__main__':
 
         gripper_end_frame_L = PyKDL.Frame() 
         gripper_end_frame_L.p = PyKDL.Vector(0.0998, 0, 0.2356) #F/T sensor
+        gripper_end_frame_L2 = PyKDL.Frame()
+        gripper_end_frame_L2.p = PyKDL.Vector(0.0998, 0, 0.25)
         gripper_end_frame_R = PyKDL.Frame() 
         gripper_end_frame_R.p = PyKDL.Vector(0.0998, 0, 0.2536) #ATC
+        gripper_end_frame_R2 = PyKDL.Frame() 
+        gripper_end_frame_R2.p = PyKDL.Vector(0.0998, 0, 0.27) #ATC
 
         fingers_thickness = 0.013 #xleft_ATC_dist
         fingers_width = 0.034 #y when fingers closed
         fingers_tip_z = 0.0153 #z distance from the fingers center to the tip
         fingers_dim = [fingers_thickness, fingers_width, fingers_tip_z]
         
-        EE_file_path_gripper_L = os.path.join(os.path.dirname(__file__), '../../motoman/motoman_sda10f_support/meshes/EE/gripper_simplified_left_Force.stl')
-        EE_file_path_gripper_R = os.path.join(os.path.dirname(__file__), '../../motoman/motoman_sda10f_support/meshes/EE/gripper_simplified_right_ATC.stl')
+        EE_file_path_gripper_L = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gripper_simplified_left_Force.stl'
+        EE_file_path_gripper_R = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gripper_simplified_right_ATC.stl'
 
-        gripper_left = EEF(EE_end_frame = gripper_end_frame_L, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_left_ATC_frame, name = "EEF_gripper_left", path = EE_file_path_gripper_L)
-        gripper_right = EEF(EE_end_frame = gripper_end_frame_R, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_right_ATC_frame, name = "EEF_gripper_right", path = EE_file_path_gripper_R)
+        gripper_left = EEF(EE_end_frame = gripper_end_frame_L, EE_end_frame2=gripper_end_frame_L2, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_left_ATC_frame, name = "EEF_gripper_left", path = EE_file_path_gripper_L)
+        gripper_right = EEF(EE_end_frame = gripper_end_frame_R, EE_end_frame2=gripper_end_frame_R2, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_right_ATC_frame, name = "EEF_gripper_right", path = EE_file_path_gripper_R)
 
         # Moving to initial position
         if not real_robot:
@@ -4055,8 +4316,11 @@ if __name__ == '__main__':
 
         #Gets info about the components (jigs and combs) and cables involved
         ops_info = []
+        ops_info_text = []
+        last_PC_spot = {}
         for ops in opsResult.data:
                 ops_temp = {}
+                ops_info_text_temp = ""
                 ops_temp['type'] = ops.type
                 if ops.type == "EC":
                         rospy.wait_for_service('/ELVEZ_platform_handler/guide_info')
@@ -4067,6 +4331,8 @@ if __name__ == '__main__':
                         guideResult = my_service(guideReq)
                         guide = guideResult.data
                         ops_temp['spot'] = {'jig': ops.spot[0].jig, 'id': ops.spot[0].id, 'side': ops.spot[0].side, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'dimensions': guide.dimensions}
+                        ops_info_text_temp = 'Pick ' + str(ops.label[0]) + " from " + str(ops.spot[0].jig)
+
                 elif ops.type == "PC":
                         rospy.wait_for_service('/ELVEZ_platform_handler/guide_info')
                         my_service = rospy.ServiceProxy('/ELVEZ_platform_handler/guide_info', guide_info)
@@ -4076,12 +4342,15 @@ if __name__ == '__main__':
                         guideResult = my_service(guideReq)
                         guide = guideResult.data
                         ops_temp['spot'] = {'jig': ops.spot[0].jig, 'id': ops.spot[0].id, 'side': ops.spot[0].side, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions}
+                        last_PC_spot = copy.deepcopy(ops_temp['spot'])
+                        ops_info_text_temp = 'Place connector ' + str(ops.label[0]) + " in " + str(ops.spot[0].jig)
 
                 elif ops.type == "RC":
                         ###Spot
                         rospy.wait_for_service('/ELVEZ_platform_handler/guide_info')
                         my_service = rospy.ServiceProxy('/ELVEZ_platform_handler/guide_info', guide_info)
                         ops_temp['spot'] = []
+                        spot_text_temp = ''
                         for spot_i in ops.spot:
                                 guideReq = guide_infoRequest()
                                 guideReq.jig = spot_i.jig
@@ -4089,37 +4358,100 @@ if __name__ == '__main__':
                                 guideResult = my_service(guideReq)
                                 guide = guideResult.data
                                 ops_temp['spot'].append({'jig': spot_i.jig, 'id': spot_i.id, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions})
-
+                                spot_text_temp += str(spot_i.jig) + "-"
+                        
+                        ops_info_text_temp = 'Route cables of ' + str(ops.label[0]) + " along " + str(spot_text_temp[:-1])
+                                
                         ###Label
                         ops_temp['label'] = ops.label
                         rospy.wait_for_service('ELVEZ_platform_handler/connector_info')
                         my_service_con = rospy.ServiceProxy('ELVEZ_platform_handler/connector_info', connector_info)
                         rospy.wait_for_service('ELVEZ_platform_handler/cable_info')
                         my_service_cab = rospy.ServiceProxy('ELVEZ_platform_handler/cable_info', cable_info)
-
-                        con_temp = []
-                        cab_temp = {}
-                        for label in ops.label:
-                                if label[:2] != 'CA':
-                                        con_temp.append(label) 
-                                        conReq = connector_infoRequest()
-                                        conReq.label = label
-                                        conResult = my_service_con(conReq)
-                                        for cable in conResult.cables:
-                                                cabReq = cable_infoRequest()
-                                                cabReq.label = cable.label
-                                                cabResult = my_service_cab(cabReq)
-                                                cab_temp[cable.label] = cabResult.diameter
+                        
+                        if ops.label[0][:2]=='WH':
+                                #route cable group
+                                ops_temp['label'] = ops.label[0]
+                        else:
+                                conReq = connector_infoRequest()
+                                conReq.label = ops.label[0]
+                                conResult = my_service_con(conReq)
+                                cablesGroup = []
+                                for cable in conResult.cables:
+                                        cablesGroup.append(cable.label)
+                                conReq.label = 'WH'+str(conResult.WH)
+                                conResult = my_service_con(conReq)
+                                cablesWH = {}
+                                cablesGroupIndex = []
+                                for cable in conResult.cables:
+                                        if cable.label in cablesGroup:
+                                                cablesGroupIndex.append(int(cable.pins[0]))
+                                        cablesWH[cable.label]=int(cable.pins[0])
+                                if max(cablesGroupIndex) < (len(cablesWH)-1):
+                                        #separate upper cables and place them in another guide
+                                        sub_op_temp = {}
+                                        sub_op_temp['type'] = 'SC'
+                                        sub_op_temp['WH'] = str(conResult.WH)
+                                        sub_op_temp['label'] = list(range(max(cablesGroupIndex)+1, len(cablesWH)))
+                                        sub_op_temp['spot'] = []
+                                        sub_op_temp['spot'].append(last_PC_spot)
+                                        # guideReq = guide_infoRequest()
+                                        # guideReq.jig = 'S'+str(conResult.WH) #DEFINE THIS ELEMENT
+                                        # guideReq.guide = '1'
+                                        # guideResult = my_service(guideReq)
+                                        # guide = guideResult.data
+                                        # sub_op_temp['spot'].append({'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions})
+                                        ops_info.append(sub_op_temp)
+                                        ops_info_text.append('Separate cables: ' + str(sub_op_temp['label']) + " in S" + str(conResult.WH))
+                                        #grasp cable group from the first route position
+                                        sub_op_temp = {}
+                                        sub_op_temp['type'] = 'GC'
+                                        sub_op_temp['label'] = ops.label[0]
+                                        sub_op_temp['spot'] = ops_temp['spot'][0]
+                                        ops_info.append(sub_op_temp)
+                                        ops_info_text.append('Grasp cable group ' + str(ops.label[0]) + " from " + str(ops.spot[0].jig))
+                                        #route cable group
+                                        ops_temp['label'] = ops.label[0]
                                 else:
-                                        if not 'Free' in con_temp:
-                                                con_temp.append('Free')
-                                        cabReq = cable_infoRequest()
-                                        cabReq.label = label
-                                        cabResult = my_service_cab(cabReq)
-                                        cab_temp[label] = cabResult.diameter                
-                        #connector cables grasped in the second end
-                        ops_temp['label'] = {'con': con_temp, 'cab': cab_temp}
+                                        #grasp cable group from the separation guide
+                                        sub_op_temp = {}
+                                        sub_op_temp['type'] = 'GC'
+                                        sub_op_temp['label'] = ops.label[0]
+                                        # guideReq = guide_infoRequest()
+                                        # guideReq.jig = 'S'+str(conResult.WH)
+                                        # guideReq.guide = '1'
+                                        # guideResult = my_service(guideReq)
+                                        # guide = guideResult.data
+                                        # sub_op_temp['stop']={'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions}
+                                        ops_info.append(sub_op_temp)
+                                        ops_info_text.append('Grasp cable group ' + str(ops.label[0]) + " from S" +str(conResult.WH))
+                                        #route cable group
+                                        ops_temp['label'] = ops.label[0]
+
+                # con_temp = []
+                # cab_temp = {}
+                # for label in ops.label:
+                #         if label[:2] != 'CA':
+                #                 con_temp.append(label) 
+                #                 conReq = connector_infoRequest()
+                #                 conReq.label = label
+                #                 conResult = my_service_con(conReq)
+                #                 for cable in conResult.cables:
+                #                         cabReq = cable_infoRequest()
+                #                         cabReq.label = cable.label
+                #                         cabResult = my_service_cab(cabReq)
+                #                         cab_temp[cable.label] = cabResult.diameter
+                #         else:
+                #                 if not 'Free' in con_temp:
+                #                         con_temp.append('Free')
+                #                 cabReq = cable_infoRequest()
+                #                 cabReq.label = label
+                #                 cabResult = my_service_cab(cabReq)
+                #                 cab_temp[label] = cabResult.diameter                
+                # #connector cables grasped in the second end
+                # ops_temp['label'] = {'con': con_temp, 'cab': cab_temp}
                 ops_info.append(ops_temp)
+                ops_info_text.append(ops_info_text_temp)
 
         if execute_grippers:
                 goal = gripper_ActGoal()

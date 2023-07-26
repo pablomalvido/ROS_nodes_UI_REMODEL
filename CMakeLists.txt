@@ -74,6 +74,8 @@ add_service_files(
    ExecTraj.srv
    MoveFile.srv
    GetList.srv
+   StringArray.srv
+   Confirmation.srv
 )
 
 ## Generate actions in the 'action' folder
