@@ -13,8 +13,8 @@ import random
 
 moveit_commander.roscpp_initialize(sys.argv)
 rospy.init_node('fake_sensors')
-forceR_pub = rospy.Publisher('sensors/force_right', forces, queue_size=1)
-forceL_pub = rospy.Publisher('sensors/force_left', forces, queue_size=1)
+forceR_pub = rospy.Publisher('/right_norbdo/forces', forces, queue_size=1)
+forceL_pub = rospy.Publisher('/left_norbdo/forces', forces, queue_size=1)
 tactileR_pub = rospy.Publisher('sensors/tactile_right', tactile, queue_size=1)
 tactileL_pub = rospy.Publisher('sensors/tactile_left', tactile, queue_size=1)
 
