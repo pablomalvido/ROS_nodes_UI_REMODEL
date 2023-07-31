@@ -76,6 +76,7 @@ add_service_files(
    GetList.srv
    StringArray.srv
    Confirmation.srv
+   CalibrationTrigger.srv
 )
 
 ## Generate actions in the 'action' folder
