@@ -211,7 +211,8 @@ try:
         rot_center_up = False
 
         #Force sensor
-        force_limit = float(config['cable_tension']) #3.5N
+        force_cable = float(config['cable_tension']) #3.5N
+        force_connector = float(config['connector_tension']) #5N
 
         #Gripper parameters
         open_distance = float(config['gripper_open_dist']) #105
@@ -224,6 +225,7 @@ except:
         exit()
 
 #Other
+force_limit = copy.deepcopy(force_cable)
 grasp_point_global = [0,0]
 gripper_right_finish = False
 gripper_left_finish = False
@@ -4073,10 +4075,16 @@ def RC_insert_final(op, route_arm):
                 # elif route_arm=="right":
                 #        plan, success = dual_arm_cartesian_plan(waypoints4_2, [speed_execution], waypoints4_1, [speed_execution], ATC1= ATC1, sync_policy=2)
 
-                plan, success = master_slave_plan(waypoints4_1, ATC1, 50.0, route_arm, type=1)
-                if success:
-                        execute_plan_async("arms", plan)
-                        # arms.execute(plan, wait=True)
+                init_pose2 = arm2.get_current_pose().pose
+                if ((init_pose2.position.z) > (init_pose.position.z + op["prev_guide"]["height"])):
+                        plan, success = compute_cartesian_path_velocity_control([waypoints4_1], [speed_execution], arm_side=route_arm)
+                        if success:
+                                execute_plan_async(route_group, plan)
+                else:
+                        plan, success = master_slave_plan(waypoints4_1, ATC1, 50.0, route_arm, type=1)
+                        if success:
+                                execute_plan_async("arms", plan)
+                                # arms.execute(plan, wait=True)
 
 
 def simplified_PC(op):
@@ -4088,6 +4096,9 @@ def simplified_PC(op):
         global fast_speed_execution
         global speed_tension
         global force_controlled
+        global force_limit
+        global force_cable
+        global force_connector
 
         #print("PC simplified")
         #print("STEP1: " +str(step1)+" STEP2: " +str(step2))
@@ -4120,14 +4131,14 @@ def simplified_PC(op):
                         plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_PC], [fast_speed_execution], arm_side=route_arm)
                         if success:
                                 execute_plan_async(motion_group_plan, plan)
-                        rospy.sleep(5)
+                                #rospy.sleep(5)
                 
                 if step2 == 1:
                         waypoints_PC2 = []
                         init_pose_trash = arm.get_current_pose().pose
                         init_pose = arm.get_current_pose().pose
                         waypoints_PC2.append(init_pose)
-                        mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, ((op["spot"]['gap']/2)-0.003), 0.003, 0, 0, 0])
+                        mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, ((op["spot"]['gap']/2)-0.003), 0, 0, 0, 0])
                         waypoints_PC2.append(ATC1.correctPose(mold_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = True, secondary_frame = True))
                         plan, success = compute_cartesian_path_velocity_control([waypoints_PC2], [slow_speed_execution], arm_side=route_arm)
                         if success:
@@ -4142,8 +4153,9 @@ def simplified_PC(op):
                         combs_width = 0.001
                         mold_width = 0.001
                         extra_pull = 0.003
-                        pull_pose = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2+pick_grasp_offset+combs_width-mold_width+extra_pull, ((op["spot"]['gap']/2)-0.003), 0.003, 0, 0, 0])
+                        pull_pose = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2+pick_grasp_offset+combs_width-mold_width+extra_pull, ((op["spot"]['gap']/2)-0.003), 0, 0, 0, 0])
                         waypoints_PC3.append(ATC1.correctPose(pull_pose, route_arm, rotate = True, ATC_sign = -1, routing_app = True, secondary_frame = True))
+                        force_limit = copy.deepcopy(force_connector)
                         if force_control_active:
                                 rospy.wait_for_service('/right_norbdo/tare')
                                 tare_forces_srv = rospy.ServiceProxy('right_norbdo/tare', Trigger)
@@ -4154,6 +4166,7 @@ def simplified_PC(op):
                                 success = execute_force_control(arm_side = route_arm, plan = plan)
                         rospy.sleep(0.5)
                         force_controlled = False
+                        force_limit = copy.deepcopy(force_cable)
 
                 if step2 == 3:
                        step1 += 1

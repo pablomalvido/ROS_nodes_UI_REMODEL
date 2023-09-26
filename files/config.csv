@@ -4,6 +4,7 @@ offset_grasp,8
 use_camera_demo,N
 speed_demo_per,1
 speed_fast_real_mms,40
+connector_tension,5.5
 gripper_slide_dist,36
 cable_tension,4
 offset_pick_grasp,15
@@ -23,8 +24,8 @@ speed_slow_real_mms,10
 speed_tension_demo_mms,20
 offset_force,10
 speed_real_per,0.05
-gripper_grasp_dist,30
 gripper_open_dist,105
+gripper_grasp_dist,30
 gripper_speed_slow,20
 gripper_speed,30
 grippers_control_demo,N
