@@ -1,0 +1,2 @@
+string new_tool
+string arm_side

@@ -39,6 +39,7 @@ rospy.init_node('elvez_process_action_server', anonymous=True)
 rospack = rospkg.RosPack()
 listener = tf.TransformListener()
 mode_publisher = rospy.Publisher('/UI/mode', String, queue_size=1)
+tool_publisher = rospy.Publisher('/UI/tool', ATC_msg, queue_size=1)
 confirmation_received = False
 confirmation_msg = 'N'
 logs_publisher = rospy.Publisher('/UI/logs', String, queue_size=1)
@@ -101,7 +102,7 @@ def callback_motion_status(status):
 # subsR = rospy.Subscriber('/sda10f/sda10f_r2_controller/joint_trajectory_action/status', GoalStatusArray, callback_right)
 subs_motion_status = rospy.Subscriber('/move_group/status', GoalStatusArray, callback_motion_status) 
 
-def get_mode_callback(req): 
+def get_mode_callback(req): #Create a subs to update this varibale from other nodes like from the manual control
         global modeUI
         resp = TriggerResponse()
         resp.success=True
@@ -152,6 +153,10 @@ try:
                         execute_grippers = True #True
                 else:
                         execute_grippers = False
+                if config['gun_control_real'] == 'Y' or config['gun_control_real'] == 'y':
+                        execute_gun = True #True
+                else:
+                        execute_gun = False
                 if config['force_control_real'] == 'Y' or config['force_control_real'] == 'y':
                         force_control_active = True #True
                 else:
@@ -178,6 +183,7 @@ try:
                 else:
                         use_camera = False
                 force_control_active = False
+                execute_gun = False
                 speed_limit = float(config['speed_demo_per']) #1
                 fast_speed_execution = float(config['speed_fast_demo_mms']) #100mm/s
                 speed_execution = float(config['speed_demo_mms']) #50mm/s
@@ -206,6 +212,7 @@ try:
         pick_grasp_offset = float(config['offset_pick_grasp'])/1000 #0.01
         z_offset_pick = float(config['offset_pick_z'])/1000 #0.05
         z_offset_photo = float(config['offset_photo_z'])/1000 #0.1
+        gun_nozzle_offset = 0.1
 
         rot_center = Pose()
         rot_center_up = False
@@ -269,6 +276,7 @@ if execute_grippers:
                 client_right_move.wait_for_server()
                 client_right_grasp = actionlib.SimpleActionClient('/right_wsg/action/grasp', gripper_ActAction)
                 client_right_grasp.wait_for_server()
+
 
 def actuate_grippers(distance, speed, arm, grasp=False):
         global execute_grippers
@@ -342,6 +350,16 @@ def actuate_grippers(distance, speed, arm, grasp=False):
                 else:
                         left_gripper_msg.value = "Gripper closed"    
                 feedback_publisher.publish(left_gripper_msg)    
+
+
+def actuate_gun():
+        global step2
+        global execute_gun
+        if execute_gun:
+                rospy.wait_for_service('/gun/tape')
+                tape_srv = rospy.ServiceProxy('gun/tape', Trigger)
+                tare_res = tape_srv(TriggerRequest())
+        step2+=1
 
 
 print('EXECUTE GRIPPERS: ' + str(execute_grippers))
@@ -1348,6 +1366,20 @@ def get_ort_axis(v1, v2):
                 #v3[2] = math.sqrt(1 - v1[2]**2 - v2[2]**2)
                 v3[2] = (v1[0]*v2[1] - v2[0]*v1[1])
         return v1, v2, v3
+
+
+def get_middle_pose(pose1, pose2):
+        frame3 = PyKDL.Frame()
+        if pose1.position.x > pose2.position.x:
+                pose1_new = pose1
+                pose2_new = pose2
+        else:
+                pose1_new = copy.deepcopy(pose2)
+                pose2_new = copy.deepcopy(pose1)
+        frame3.p = PyKDL.Vector((pose1_new.position.x + pose2_new.position.x)/2, (pose1_new.position.y + pose2_new.position.y)/2, (pose1_new.position.z + pose2_new.position.z)/2)
+        rot_angle=math.atan2((pose1_new.position.y - pose2_new.position.y), (pose1_new.position.x - pose2_new.position.x))
+        frame3.M = frame3.M.RotZ(rot_angle)        
+        return frame_to_pose(frame3)
 
 
 def compute_distance_relative(pose1, pose2, axis):
@@ -2869,189 +2901,189 @@ def circular_trajectory(center, initial_pose, degree, rot_axis, center_waypoints
 
 ######################################################################################################################################
 
-def route_cables_2(op_info, last_guide, connector_hand, con_pose, cable_pose):
-        if connector_hand == "left":
-                arm_con = arm_left
-                arm_cable = arm_right
-                cable_hand = "right"
-        else:
-                arm_con = arm_right
-                arm_cable = arm_left
-                cable_hand = "left"
+# def route_cables_2(op_info, last_guide, connector_hand, con_pose, cable_pose):
+#         if connector_hand == "left":
+#                 arm_con = arm_left
+#                 arm_cable = arm_right
+#                 cable_hand = "right"
+#         else:
+#                 arm_con = arm_right
+#                 arm_cable = arm_left
+#                 cable_hand = "left"
 
-        #We asume that the cables are already grasped. This will be more complex when we consider the cable separation
+#         #We asume that the cables are already grasped. This will be more complex when we consider the cable separation
 
-        #Analyzes the sequence of jigs to know if there are corners (turns) and how many jigs group we must guide together
-        route_plan = []
-        first_guide = True
-        if abs(op_info['spot'][0]['pose_corner'].position.x - last_guide['pose_corner'].position.x) >= 0.001:
-                direction = (op_info['spot'][0]['pose_corner'].position.y - last_guide['pose_corner'].position.y)/(op_info['spot'][0]['pose_corner'].position.x - last_guide['pose_corner'].position.x)
-                direction_angle = math.atan(direction)*180/math.pi
-        else:
-                direction_angle = 90
-        #direction_angle)
-        direction_x = get_axis(op_info['spot'][0]['pose_corner'], last_guide['pose_corner'])
-        end_guide_prev = get_shifted_pose(last_guide['pose_corner'], [last_guide['width'], last_guide['gap']/2, 0, 0, 0, 0]) 
-        start_first_guide = get_shifted_pose(op_info['spot'][0]['pose_corner'], [0, op_info['spot'][0]['gap']/2, 0, 0, 0, 0])
+#         #Analyzes the sequence of jigs to know if there are corners (turns) and how many jigs group we must guide together
+#         route_plan = []
+#         first_guide = True
+#         if abs(op_info['spot'][0]['pose_corner'].position.x - last_guide['pose_corner'].position.x) >= 0.001:
+#                 direction = (op_info['spot'][0]['pose_corner'].position.y - last_guide['pose_corner'].position.y)/(op_info['spot'][0]['pose_corner'].position.x - last_guide['pose_corner'].position.x)
+#                 direction_angle = math.atan(direction)*180/math.pi
+#         else:
+#                 direction_angle = 90
+#         #direction_angle)
+#         direction_x = get_axis(op_info['spot'][0]['pose_corner'], last_guide['pose_corner'])
+#         end_guide_prev = get_shifted_pose(last_guide['pose_corner'], [last_guide['width'], last_guide['gap']/2, 0, 0, 0, 0]) 
+#         start_first_guide = get_shifted_pose(op_info['spot'][0]['pose_corner'], [0, op_info['spot'][0]['gap']/2, 0, 0, 0, 0])
 
-        if axis_angle2D(direction_x[0:2], get_axis_from_RM(pose_to_frame(last_guide['pose_corner']).M, "R")[0:2]) < 90:
-                        route_plan.append(str(last_guide['jig']) + ":ok")
-        else:                
-                        route_plan.append(str(last_guide['jig']) + ":rot")
+#         if axis_angle2D(direction_x[0:2], get_axis_from_RM(pose_to_frame(last_guide['pose_corner']).M, "R")[0:2]) < 90:
+#                         route_plan.append(str(last_guide['jig']) + ":ok")
+#         else:                
+#                         route_plan.append(str(last_guide['jig']) + ":rot")
 
-        if compute_distance(end_guide_prev, start_first_guide) > 0.06:
-                route_plan.append('slide')
-        else:
-                route_plan.append('lift')
+#         if compute_distance(end_guide_prev, start_first_guide) > 0.06:
+#                 route_plan.append('slide')
+#         else:
+#                 route_plan.append('lift')
 
-        for guide in op_info['spot']:
-                #print(guide)
-                start_guide_current = get_shifted_pose(guide['pose_corner'], [0, guide['gap']/2, 0, 0, 0, 0])
-                guide_current = get_shifted_pose(guide['pose_corner'], [guide['width']/2, guide['gap']/2, 0, 0, 0, 0])
-                end_guide_current = get_shifted_pose(guide['pose_corner'], [guide['width'], guide['gap']/2, 0, 0, 0, 0]) 
+#         for guide in op_info['spot']:
+#                 #print(guide)
+#                 start_guide_current = get_shifted_pose(guide['pose_corner'], [0, guide['gap']/2, 0, 0, 0, 0])
+#                 guide_current = get_shifted_pose(guide['pose_corner'], [guide['width']/2, guide['gap']/2, 0, 0, 0, 0])
+#                 end_guide_current = get_shifted_pose(guide['pose_corner'], [guide['width'], guide['gap']/2, 0, 0, 0, 0]) 
 
-                if not first_guide:
-                        dist_guides = compute_distance(end_guide_prev, start_guide_current)
-                        if abs(guide_current.position.x - end_guide_prev.position.x) >= 0.001:
-                                direction = (guide_current.position.y - end_guide_prev.position.y)/(guide_current.position.x - end_guide_prev.position.x)
-                                direction_angle = math.atan(direction)*180/math.pi
-                        else:
-                                direction = 1000
-                                direction_angle = 90
-                        direction_x = get_axis(guide_current, guide_prev)
-                        #direction_z = get_axis_from_RM(pose_to_frame(guide_current).M, "Y")
-                        #direction_y = get_ort_axis(direction_z, direction_x)[2]
-                        print(direction_x)
-                        print(get_axis_from_RM(pose_to_frame(guide_current).M, "R"))
-                        if ((abs(direction_x[0])-abs(get_axis_from_RM(pose_to_frame(guide_current).M, "R")[0]))*180/math.pi)>10:
-                                dir_change = True
-                        else:
-                                dir_change = False
-                        print(direction_angle)
-                        #Take decisions (threshold for the small variations)
-                        if dist_guides > 0.06:
-                                route_plan.append('insert')
-                        deg_dif, rad_dif = degree_difference(pose_to_frame(guide_current).M, pose_to_frame(guide_prev).M)
-                        #print(deg_dif)
-                        if (abs(direction_angle - direction_angle_prev) > 5 and not ((deg_dif[2]<5 and deg_dif[2]>-5) or (deg_dif[2]>175 or deg_dif[2]<-175))) or abs(direction_angle - direction_angle_prev) > 20:
-                                if dir_change_prev:
-                                        route_plan.append('corner before insert')
-                                else:
-                                        route_plan.append('corner after insert')
+#                 if not first_guide:
+#                         dist_guides = compute_distance(end_guide_prev, start_guide_current)
+#                         if abs(guide_current.position.x - end_guide_prev.position.x) >= 0.001:
+#                                 direction = (guide_current.position.y - end_guide_prev.position.y)/(guide_current.position.x - end_guide_prev.position.x)
+#                                 direction_angle = math.atan(direction)*180/math.pi
+#                         else:
+#                                 direction = 1000
+#                                 direction_angle = 90
+#                         direction_x = get_axis(guide_current, guide_prev)
+#                         #direction_z = get_axis_from_RM(pose_to_frame(guide_current).M, "Y")
+#                         #direction_y = get_ort_axis(direction_z, direction_x)[2]
+#                         print(direction_x)
+#                         print(get_axis_from_RM(pose_to_frame(guide_current).M, "R"))
+#                         if ((abs(direction_x[0])-abs(get_axis_from_RM(pose_to_frame(guide_current).M, "R")[0]))*180/math.pi)>10:
+#                                 dir_change = True
+#                         else:
+#                                 dir_change = False
+#                         print(direction_angle)
+#                         #Take decisions (threshold for the small variations)
+#                         if dist_guides > 0.06:
+#                                 route_plan.append('insert')
+#                         deg_dif, rad_dif = degree_difference(pose_to_frame(guide_current).M, pose_to_frame(guide_prev).M)
+#                         #print(deg_dif)
+#                         if (abs(direction_angle - direction_angle_prev) > 5 and not ((deg_dif[2]<5 and deg_dif[2]>-5) or (deg_dif[2]>175 or deg_dif[2]<-175))) or abs(direction_angle - direction_angle_prev) > 20:
+#                                 if dir_change_prev:
+#                                         route_plan.append('corner before insert')
+#                                 else:
+#                                         route_plan.append('corner after insert')
 
-                else:
-                        first_guide = False
-                        print(direction_x)
-                        print(get_axis_from_RM(pose_to_frame(guide_current).M, "R"))
-                        if ((abs(direction_x[0])-abs(get_axis_from_RM(pose_to_frame(guide_current).M, "R")[0]))*180/math.pi)>10:
-                                dir_change = True
-                        else:
-                                dir_change = False
+#                 else:
+#                         first_guide = False
+#                         print(direction_x)
+#                         print(get_axis_from_RM(pose_to_frame(guide_current).M, "R"))
+#                         if ((abs(direction_x[0])-abs(get_axis_from_RM(pose_to_frame(guide_current).M, "R")[0]))*180/math.pi)>10:
+#                                 dir_change = True
+#                         else:
+#                                 dir_change = False
 
-                if axis_angle2D(direction_x[0:2], get_axis_from_RM(pose_to_frame(guide_current).M, "R")[0:2]) > 90:
-                        route_plan.append(str(guide['jig']) + ":ok")
-                else:
-                        route_plan.append(str(guide['jig']) + ":rot")
+#                 if axis_angle2D(direction_x[0:2], get_axis_from_RM(pose_to_frame(guide_current).M, "R")[0:2]) > 90:
+#                         route_plan.append(str(guide['jig']) + ":ok")
+#                 else:
+#                         route_plan.append(str(guide['jig']) + ":rot")
 
-                guide_prev = guide_current
-                end_guide_prev = end_guide_current
-                direction_angle_prev = direction_angle
-                dir_change_prev = dir_change
+#                 guide_prev = guide_current
+#                 end_guide_prev = end_guide_current
+#                 direction_angle_prev = direction_angle
+#                 dir_change_prev = dir_change
 
-        route_plan.append('insert')
+#         route_plan.append('insert')
         
-        print(route_plan)
+#         print(route_plan)
         
-        #The cable hand reorients and slides the cable towards the next guide if there is distance enough
-        i = 1
-        route_plan_2 = []
-        for operation in route_plan[1:]:
-                if operation == "lift":
-                        route_plan_2.append({"action": "lift", "keypoint": [route_plan[i+1]]})
-                elif operation == "slide":
-                        route_plan_2.append({"action": "slide", "keypoint": [route_plan[i-1], route_plan[i+1]]})
-                elif operation == "insert":
-                        if (i+1) < len(route_plan):
-                                route_plan_2.append({"action": "insert", "keypoint": [route_plan[i-1], route_plan[i+1]]}) #In case of collisions we will need to reevaluate the distance to the next guide after moving forward #Also if route_plan[i+1] is not a corner
-                                route_plan_2.append({"action": "slide", "keypoint": [route_plan[i-1], route_plan[i+1]]})
-                        else:
-                                route_plan_2.append({"action": "insert_last", "keypoint": [route_plan[i-1]]})
-                                route_plan_2.append({"action": "open", "keypoint": [route_plan[i-1]]})
-                elif operation == "corner after insert":
-                        if route_plan[i-1] == "insert":
-                                route_plan_2.append({"action": "corner_bottom", "keypoint": [route_plan[i-2], route_plan[i+1]]})
-                        else:
-                                route_plan_2.append({"action": "corner_top", "keypoint": [route_plan[i-1], route_plan[i+1]]})
-                elif operation == "corner before insert":
-                        if route_plan_2[-1]["action"] == "slide":
-                                route_plan_2[-1] = {"action": "slide_corner", "keypoint": [route_plan_2[-1]["keypoint"][0], route_plan_2[-1]["keypoint"][1], route_plan[i+1]]}
-                        elif route_plan_2[-1]["action"] == "slide_top":
-                                route_plan_2[-1] = {"action": "slide_top_corner", "keypoint": [route_plan_2[-1]["keypoint"][0], route_plan[i+1]]}
-                else:
-                        if route_plan[i-1] != "lift" and route_plan[i-1] != "slide" and route_plan[i-1] != "insert":
-                                route_plan_2.append({"action": "slide_top", "keypoint": [route_plan[i]]})
+#         #The cable hand reorients and slides the cable towards the next guide if there is distance enough
+#         i = 1
+#         route_plan_2 = []
+#         for operation in route_plan[1:]:
+#                 if operation == "lift":
+#                         route_plan_2.append({"action": "lift", "keypoint": [route_plan[i+1]]})
+#                 elif operation == "slide":
+#                         route_plan_2.append({"action": "slide", "keypoint": [route_plan[i-1], route_plan[i+1]]})
+#                 elif operation == "insert":
+#                         if (i+1) < len(route_plan):
+#                                 route_plan_2.append({"action": "insert", "keypoint": [route_plan[i-1], route_plan[i+1]]}) #In case of collisions we will need to reevaluate the distance to the next guide after moving forward #Also if route_plan[i+1] is not a corner
+#                                 route_plan_2.append({"action": "slide", "keypoint": [route_plan[i-1], route_plan[i+1]]})
+#                         else:
+#                                 route_plan_2.append({"action": "insert_last", "keypoint": [route_plan[i-1]]})
+#                                 route_plan_2.append({"action": "open", "keypoint": [route_plan[i-1]]})
+#                 elif operation == "corner after insert":
+#                         if route_plan[i-1] == "insert":
+#                                 route_plan_2.append({"action": "corner_bottom", "keypoint": [route_plan[i-2], route_plan[i+1]]})
+#                         else:
+#                                 route_plan_2.append({"action": "corner_top", "keypoint": [route_plan[i-1], route_plan[i+1]]})
+#                 elif operation == "corner before insert":
+#                         if route_plan_2[-1]["action"] == "slide":
+#                                 route_plan_2[-1] = {"action": "slide_corner", "keypoint": [route_plan_2[-1]["keypoint"][0], route_plan_2[-1]["keypoint"][1], route_plan[i+1]]}
+#                         elif route_plan_2[-1]["action"] == "slide_top":
+#                                 route_plan_2[-1] = {"action": "slide_top_corner", "keypoint": [route_plan_2[-1]["keypoint"][0], route_plan[i+1]]}
+#                 else:
+#                         if route_plan[i-1] != "lift" and route_plan[i-1] != "slide" and route_plan[i-1] != "insert":
+#                                 route_plan_2.append({"action": "slide_top", "keypoint": [route_plan[i]]})
                 
-                i+=1
-        #print(route_plan_2)
+#                 i+=1
+#         #print(route_plan_2)
 
-        for action in route_plan_2:
-                print(action)
+#         for action in route_plan_2:
+#                 print(action)
 
-        op_info['spot'].append(last_guide) #To find its information there when it searches
-        con_hand_state = 'idle'
-        circ_insert = True
-        for operation in route_plan_2:
-                op_keypoints = []
-                guides = []
-                rot_gripper = False
-                for key in operation['keypoint']:
-                        #op_keypoints.append(key.split(':')) #[jig, turn]
-                        print(key)
-                        guide = copy.deepcopy(list(filter(lambda x: (x["jig"] == key.split(':')[0]), op_info['spot']))[0])
-                        #print(guide)
-                        #print(key.split(':')[1])
-                        if key.split(':')[1] == "rot":
-                                guide["pose_corner"] = get_shifted_pose(guide["pose_corner"], [guide['width'], guide['gap'], 0, 0, 0, math.pi])
-                                guide["collisions"] = [-(guide["collisions"][1] - guide['width']), -guide['collisions'][0] + guide['width'], -(guide["collisions"][3] - guide['gap']), -guide["collisions"][2] + guide['gap']]
-                                rot_gripper = True
-                        guides.append(guide)
-                        #print(guide)
+#         op_info['spot'].append(last_guide) #To find its information there when it searches
+#         con_hand_state = 'idle'
+#         circ_insert = True
+#         for operation in route_plan_2:
+#                 op_keypoints = []
+#                 guides = []
+#                 rot_gripper = False
+#                 for key in operation['keypoint']:
+#                         #op_keypoints.append(key.split(':')) #[jig, turn]
+#                         print(key)
+#                         guide = copy.deepcopy(list(filter(lambda x: (x["jig"] == key.split(':')[0]), op_info['spot']))[0])
+#                         #print(guide)
+#                         #print(key.split(':')[1])
+#                         if key.split(':')[1] == "rot":
+#                                 guide["pose_corner"] = get_shifted_pose(guide["pose_corner"], [guide['width'], guide['gap'], 0, 0, 0, math.pi])
+#                                 guide["collisions"] = [-(guide["collisions"][1] - guide['width']), -guide['collisions'][0] + guide['width'], -(guide["collisions"][3] - guide['gap']), -guide["collisions"][2] + guide['gap']]
+#                                 rot_gripper = True
+#                         guides.append(guide)
+#                         #print(guide)
                 
-                if operation['action'] == "lift":
-                        waypoints_lift, cable_pose = route_lift(guides[0], cable_pose, cable_hand, arm_cable, rot_gripper)
-                if operation['action'] == "slide":
-                        waypoints_slide_con, waypoints_slide_cable, con_pose, cable_pose = route_slide(guides[0], guides[1], con_pose, cable_pose, cable_hand, arm_cable, con_hand_state, rot_gripper) #Check collisions
-                        #con_hand_state = 'grasping'
-                if operation['action'] == "insert":
-                        if con_hand_state == 'idle':
-                                rot_point = get_shifted_pose(last_guide['pose_corner'], [last_guide['width']/2, last_guide['gap']/2, last_guide['height']/2, 0, 0, 0]) 
-                        else:
-                                rot_point = copy.deepcopy(con_pose)
-                        waypoints_insert, cable_pose = route_insert(guides[0], cable_pose, cable_hand, arm_cable, rot_point, guides[1], circ_insert, rot_gripper) #Check collisions, maybe it is not possible to insert right there and has to go down a bit forward
-                        circ_insert = True
-                if operation['action'] == "insert_last":
-                        if con_hand_state == 'idle':
-                                rot_point = get_shifted_pose(last_guide['pose_corner'], [last_guide['width']/2, last_guide['gap']/2, last_guide['height']/2, 0, 0, 0]) 
-                        else:
-                                rot_point = copy.deepcopy(con_pose)
-                        waypoints_insert, cable_pose = route_insert(guides[0], cable_pose, cable_hand, arm_cable, rot_point, {}, circ_insert, rot_gripper) #Check collisions, maybe it is not possible to insert right there and has to go down a bit forward
-                        circ_insert = True
-                if operation['action'] == "corner_top":
-                        waypoints_slide_cable, cable_pose = route_corner_top(guides[0], guides[1], cable_pose, cable_hand, arm_cable, rot_gripper)
-                        circ_insert = False
-                if operation['action'] == "corner_bottom":
-                        pass
-                if operation['action'] == "slide_corner":
-                        waypoints_slide_cable, cable_pose = route_corner_slide(guides[0], guides[1], guides[2], cable_pose, cable_hand, arm_cable, rot_gripper)
-                        circ_insert = False
-                if operation['action'] == "slide_top_corner":
-                        pass
-                if operation['action'] == "slide_top":
-                        waypoints_slide_top, cable_pose = route_slide_top(guides[0], cable_pose, cable_hand, arm_cable, rot_gripper)
-                if operation['action'] == "open":
-                        waypoints_open_con, waypoints_open_cable, con_pose, cable_pose = route_open(con_pose, cable_pose, cable_hand, arm_cable, con_hand_state, rot_gripper)
+#                 if operation['action'] == "lift":
+#                         waypoints_lift, cable_pose = route_lift(guides[0], cable_pose, cable_hand, arm_cable, rot_gripper)
+#                 if operation['action'] == "slide":
+#                         waypoints_slide_con, waypoints_slide_cable, con_pose, cable_pose = route_slide(guides[0], guides[1], con_pose, cable_pose, cable_hand, arm_cable, con_hand_state, rot_gripper) #Check collisions
+#                         #con_hand_state = 'grasping'
+#                 if operation['action'] == "insert":
+#                         if con_hand_state == 'idle':
+#                                 rot_point = get_shifted_pose(last_guide['pose_corner'], [last_guide['width']/2, last_guide['gap']/2, last_guide['height']/2, 0, 0, 0]) 
+#                         else:
+#                                 rot_point = copy.deepcopy(con_pose)
+#                         waypoints_insert, cable_pose = route_insert(guides[0], cable_pose, cable_hand, arm_cable, rot_point, guides[1], circ_insert, rot_gripper) #Check collisions, maybe it is not possible to insert right there and has to go down a bit forward
+#                         circ_insert = True
+#                 if operation['action'] == "insert_last":
+#                         if con_hand_state == 'idle':
+#                                 rot_point = get_shifted_pose(last_guide['pose_corner'], [last_guide['width']/2, last_guide['gap']/2, last_guide['height']/2, 0, 0, 0]) 
+#                         else:
+#                                 rot_point = copy.deepcopy(con_pose)
+#                         waypoints_insert, cable_pose = route_insert(guides[0], cable_pose, cable_hand, arm_cable, rot_point, {}, circ_insert, rot_gripper) #Check collisions, maybe it is not possible to insert right there and has to go down a bit forward
+#                         circ_insert = True
+#                 if operation['action'] == "corner_top":
+#                         waypoints_slide_cable, cable_pose = route_corner_top(guides[0], guides[1], cable_pose, cable_hand, arm_cable, rot_gripper)
+#                         circ_insert = False
+#                 if operation['action'] == "corner_bottom":
+#                         pass
+#                 if operation['action'] == "slide_corner":
+#                         waypoints_slide_cable, cable_pose = route_corner_slide(guides[0], guides[1], guides[2], cable_pose, cable_hand, arm_cable, rot_gripper)
+#                         circ_insert = False
+#                 if operation['action'] == "slide_top_corner":
+#                         pass
+#                 if operation['action'] == "slide_top":
+#                         waypoints_slide_top, cable_pose = route_slide_top(guides[0], cable_pose, cable_hand, arm_cable, rot_gripper)
+#                 if operation['action'] == "open":
+#                         waypoints_open_con, waypoints_open_cable, con_pose, cable_pose = route_open(con_pose, cable_pose, cable_hand, arm_cable, con_hand_state, rot_gripper)
 
-        return con_pose, cable_pose
+#         return con_pose, cable_pose
 
 #################################################################################################################
 
@@ -4637,6 +4669,114 @@ def grasp_cables(op, route_arm, separated = False):
                         process_actionserver.publish_feedback()
 
 
+def tape(tape_guides, grasp_guide):
+        global grasp_offset
+        global z_offset
+        global gun_nozzle_offset
+        global grasp_distance
+        global step1
+        global step2
+
+        if (tape_guides[0]["pose_corner"].position.x <= grasp_guide["pose_corner"].position.x) and (tape_guides[1]["pose_corner"].position.x <= grasp_guide["pose_corner"].position.x):
+                tape_arm = "left"
+                grasp_arm = "right"
+                fingers_size = ATC1.EEF_dict[ATC1.EEF_right].fingers_dim
+                grasp_sign_arm = 1
+        else:
+                tape_arm = "right"
+                grasp_arm = "left"
+                fingers_size = ATC1.EEF_dict[ATC1.EEF_left].fingers_dim
+                grasp_sign_arm = -1
+
+        grasp_x_dir_test = get_shifted_pose(grasp_guide["pose_corner"], [1,0,0,0,0,0])
+        if grasp_x_dir_test.position.x > grasp_x_dir_test.position.x:
+                grasp_sign = grasp_sign_arm
+        else:
+                grasp_sign = -grasp_sign_arm
+
+        tape_group_name = "arm_"+tape_arm
+        grasp_group_name = "arm_"+grasp_arm
+        tape_group = motion_groups[tape_group_name]
+        grasp_group = motion_groups[grasp_group_name]
+
+        guide_tape1 = get_shifted_pose(tape_guides[0]["pose_corner"], [tape_guides[0]['width']/2, tape_guides[0]['gap']/2, 0, 0, 0, 0])
+        guide_tape2 = get_shifted_pose(tape_guides[1]["pose_corner"], [tape_guides[1]['width']/2, tape_guides[1]['gap']/2, 0, 0, 0, 0])
+        tape_pose = get_middle_pose(guide_tape1, guide_tape2)
+        tape_pose_offset = get_shifted_pose(tape_pose, [0, 0,  tape_guides[0]['height'] + z_offset + gun_nozzle_offset, 0, 0, 0])
+        grasp_pose = get_shifted_pose(grasp_guide["pose_corner"], [(grasp_guide['width']/2)+grasp_sign*(grasp_guide['width']/2 + grasp_offset + fingers_size[0]/2), grasp_guide['gap']/2, 0, 0, 0, 0])
+        grasp_pose_offset = get_shifted_pose(grasp_pose, [0, 0,  grasp_guide['height'] + z_offset, 0, 0, 0])
+
+        if step1 == 0:
+                if step2 == 0:
+                        #Move to grasp point offset
+                        retract_arm(grasp_arm, grasp_guide)
+                        print("STEP0")
+
+                if step2 == 1:
+                        print("STEP1_beginning")
+                        waypoints_T1 = []
+                        init_pose = grasp_group.get_current_pose().pose
+                        waypoints_T1.append(init_pose)
+                        waypoints_T1.append(ATC1.correctPose(grasp_pose_offset, grasp_arm, rotate = True, ATC_sign = -1, routing_app = False, secondary_frame = True))
+                        #visualize_keypoints_simple(waypoints_T1)
+                        print("STEP1_middle")
+                        plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_T1], [fast_speed_execution], arm_side=grasp_arm)
+                        print("STEP1_almostEnd")
+                        if success:
+                                execute_plan_async(motion_group_plan, plan)
+                        print("STEP1")
+
+                if step2 == 2:
+                        waypoints_T2 = []
+                        init_pose = grasp_group.get_current_pose().pose
+                        waypoints_T2.append(init_pose)
+                        waypoints_T2.append(ATC1.correctPose(grasp_pose, grasp_arm, rotate = True, ATC_sign = -1, routing_app = False, secondary_frame = True))
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_T2], [slow_speed_execution], arm_side=grasp_arm)
+                        if success:
+                                execute_plan_async(grasp_group_name, plan)
+                        print("STEP2")
+
+                if step2 == 3:
+                        actuate_grippers(grasp_distance, gripper_speed, grasp_arm, grasp=True)
+                        step2 = 4
+                        print("STEP3")
+                
+                if step2 == 4:
+                        waypoints_T3 = []
+                        init_pose = tape_group.get_current_pose().pose
+                        waypoints_T3.append(init_pose)
+                        waypoints_T3.append(ATC1.correctPose(tape_pose_offset, tape_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_T3], [speed_execution], arm_side=tape_arm)
+                        if success:
+                                execute_plan_async(tape_group_name, plan)
+                        print("STEP4")
+
+                if step2 == 5:
+                        waypoints_T4 = []
+                        init_pose = tape_group.get_current_pose().pose
+                        waypoints_T4.append(init_pose)
+                        waypoints_T4.append(ATC1.correctPose(tape_pose, tape_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_T4], [slow_speed_execution], arm_side=tape_arm)
+                        if success:
+                                execute_plan_async(tape_group_name, plan)
+                        print("STEP5")
+
+                if step2 == 6:
+                        actuate_gun()
+
+                if step2 == 7:
+                        waypoints_T5 = []
+                        init_pose = tape_group.get_current_pose().pose
+                        waypoints_T5.append(init_pose)
+                        waypoints_T5.append(ATC1.correctPose(tape_pose_offset, tape_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_T5], [speed_execution], arm_side=tape_arm)
+                        if success:
+                                execute_plan_async(tape_group_name, plan)
+               
+                if step2 == 8:
+                        retract_arm(grasp_arm, grasp_guide)
+
+
 def stop_function(message):
         global stop_mov
         stop_mov = True
@@ -4698,6 +4838,32 @@ def update_route_arm_info(op):
                 move_away2_sign = 1
                
 
+def check_tools(op):
+        if op['type'] != 'T':
+                if ATC1.EEF_right=="EEF_taping_gun":
+                        #MOVE TO A CONFIGURATION WITH THE GUN HORIZONTAL IN SEVERAL STEPS TO AVOID COLLISION (MOVE CONFIG)
+                        changed_tool, success = ATC1.changeTool("EEF_gripper_right", "right")
+                elif ATC1.EEF_left=="EEF_taping_gun":
+                        #MOVE TO A CONFIGURATION WITH THE GUN HORIZONTAL IN SEVERAL STEPS TO AVOID COLLISION (MOVE CONFIG)
+                        changed_tool, success = ATC1.changeTool("EEF_gripper_left", "left")
+        else:
+                print("TAPE")
+                if (op["spot"][0]["pose_corner"].position.x <= op["spot"][2]["pose_corner"].position.x) and (op["spot"][1]["pose_corner"].position.x <= op["spot"][2]["pose_corner"].position.x):   #Tape with left
+                        print("LEFT TAPE")
+                        if ATC1.EEF_right=="EEF_taping_gun":
+                                print("HAVE TO CHANGE RIGHT TOOL")
+                                changed_tool, success = ATC1.changeTool("EEF_gripper_right", "right")
+                        if ATC1.EEF_left=="EEF_gripper_left":
+                                print("HAVE TO CHANGE LEFT TOOL")
+                                changed_tool, success = ATC1.changeTool("EEF_taping_gun", "left")
+                else: #Tape with right
+                        if ATC1.EEF_left=="EEF_taping_gun":
+                                changed_tool, success = ATC1.changeTool("EEF_gripper_left", "left")
+                        if ATC1.EEF_right=="EEF_gripper_right":
+                                changed_tool, success = ATC1.changeTool("EEF_taping_gun", "right")
+                #MOVE TO A CONFIGURATION WITH THE GUN VERTICAL IN SEVERAL STEPS TO AVOID COLLISION (MOVE CONFIG)
+       
+
 def execute_operation(op):
         global PC_op
         global route_arm
@@ -4707,6 +4873,9 @@ def execute_operation(op):
         global move_away2_sign
         global route_group
         global group2  
+
+        check_tools(op)
+
         if op['type'] == "EC":
                 EC(op)              
             
@@ -4724,13 +4893,16 @@ def execute_operation(op):
                 update_route_arm_info(PC_op)
                 separate_cables(op, route_arm)
 
-        elif op['type'] == "GC" or "GCS":
+        elif op['type'] == "GC" or op['type'] == "GCS":
                 PC_op = get_last_connector_info(op)
                 update_route_arm_info(PC_op)
                 if op['type'] == "GC":
                         grasp_cables(op, route_arm)
                 else:
                         grasp_cables(op, route_arm, separated=True)
+
+        elif op['type'] == "T":
+                tape(op["spot"][:2],op["spot"][2])
 
 
 ##################################################################################################################
@@ -4837,6 +5009,7 @@ class ElvezProcessClass(object):
                         rospy.loginfo('Successful test')
                         self._as.set_succeeded(self._result) #Set the action as succeded and sent the result to the client
 
+
 def all_operations_callback(req): 
         """
         Service that returns operations to perform
@@ -4854,6 +5027,27 @@ def all_operations_callback(req):
 rospy.Service('/process/all_operations', StringArray, all_operations_callback)
 
 
+def ATC_callback(req):
+        global modeUI
+        new_tool_name = 'EEF_'+req.new_tool
+        if ATC1.EEF_right != new_tool_name:
+                msg = String()
+                msg.data = "Running"
+                modeUI="Running"
+                mode_publisher.publish(msg)
+                changed_tool, success = ATC1.changeTool(new_tool_name, req.arm_side)
+                if success:
+                        msg = ATC_msg()
+                        msg.new_tool = changed_tool
+                        msg.arm_side = req.arm_side
+                        tool_publisher.publish(msg)
+        msg = String()
+        msg.data = "Idle"
+        modeUI="Idle"
+        mode_publisher.publish(msg)
+
+rospy.Subscriber('/UI/ATC', ATC_msg, ATC_callback) 
+
 ##################################################################################################################
 if __name__ == '__main__':
         #IMPORTANT: Modify all the named target poses to match the poses defined in your SRDF file
@@ -4867,13 +5061,13 @@ if __name__ == '__main__':
         touch_links_right = ["right_tool_exchanger"]
 
         gripper_left_ATC_frame = PyKDL.Frame()
-        gripper_left_ATC_frame.p = PyKDL.Vector(0.85, 0.3, 1.4)
+        gripper_left_ATC_frame.p = PyKDL.Vector(0.85, 0.3, 1.5)
         gripper_left_ATC_frame.M.DoRotY(1.57)
         gripper_left_ATC_frame.M.DoRotZ(3.14)
         gripper_left_ATC_pose = frame_to_pose(gripper_left_ATC_frame)
 
         gripper_right_ATC_frame = PyKDL.Frame()
-        gripper_right_ATC_frame.p = PyKDL.Vector(0.85, -0.3, 1.4)
+        gripper_right_ATC_frame.p = PyKDL.Vector(0.85, -0.3, 1.5)
         gripper_right_ATC_frame.M.DoRotY(1.57)
         gripper_right_ATC_frame.M.DoRotZ(3.14)
         gripper_right_ATC_pose = frame_to_pose(gripper_right_ATC_frame)
@@ -4891,12 +5085,23 @@ if __name__ == '__main__':
         fingers_width = 0.034 #y when fingers closed
         fingers_tip_z = 0.0153 #z distance from the fingers center to the tip
         fingers_dim = [fingers_thickness, fingers_width, fingers_tip_z]
+
+        gun_ATC_frame = PyKDL.Frame()
+        gun_ATC_frame.p = PyKDL.Vector(0.85, 0, 1.5)
+        gun_ATC_frame.M.DoRotY(1.57)
+        gun_ATC_frame.M.DoRotZ(3.14)
+        gun_ATC_pose = frame_to_pose(gun_ATC_frame)
+        gun_end_frame = PyKDL.Frame()
+        gun_end_frame.p = PyKDL.Vector(0.1, -0.055, 0.086) 
+        gun_end_frame.M.DoRotY(1.57)
         
         EE_file_path_gripper_L = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gripper_side_simplified_left_noATC_v4.stl'
         EE_file_path_gripper_R = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gripper_side_simplified_right_noATC_v4.stl'
+        EE_file_path_gun = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gun_3.stl'
 
         gripper_left = EEF(EE_end_frame = gripper_end_frame_L, EE_end_frame2=gripper_end_frame_L2, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_left_ATC_frame, name = "EEF_gripper_left", path = EE_file_path_gripper_L)
         gripper_right = EEF(EE_end_frame = gripper_end_frame_R, EE_end_frame2=gripper_end_frame_R2, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_right_ATC_frame, name = "EEF_gripper_right", path = EE_file_path_gripper_R)
+        gun = EEF(EE_end_frame = gun_end_frame, x = 0.35, y = 0.3, z = 0.1, ATC_frame = gun_ATC_frame, name = "EEF_taping_gun", path = EE_file_path_gun)
 
         # Moving to initial position
         if not real_robot:
@@ -4904,7 +5109,8 @@ if __name__ == '__main__':
 
         #Define the ATC instance
         max_arms_dist = frame_to_pose(gripper_end_frame_L).position.x + frame_to_pose(gripper_end_frame_R).position.x + fingers_thickness + 0.05
-        ATC1 = ATC(left_tool=gripper_left, right_tool=gripper_right, eef_link_left=eef_link_left, eef_link_right=eef_link_right, ATC_tools=[], left_ATC_angle=0.7854, right_ATC_angle=-0.7854, left_ATC_dist=0.054, right_ATC_dist=0.054)
+        #ATC1 = ATC(left_tool=gripper_left, right_tool=gripper_right, eef_link_left=eef_link_left, eef_link_right=eef_link_right, ATC_tools=[], left_ATC_angle=0.7854, right_ATC_angle=-0.7854, left_ATC_dist=0.054, right_ATC_dist=0.054)
+        ATC1 = ATC(left_tool=gun, right_tool=gripper_right, eef_link_left=eef_link_left, eef_link_right=eef_link_right, ATC_tools=[gripper_left], left_ATC_angle=0.7854, right_ATC_angle=-0.7854, left_ATC_dist=0.054, right_ATC_dist=0.054)
 
         ##### Define target points
         #Get all operations: Pick cable from combs, Place cable in guide, Route cable through guide 1 and 2
@@ -5027,7 +5233,20 @@ if __name__ == '__main__':
                                         ops_info_text.append('Grasp cable group ' + str(ops.label[0]) + " from J" + str(conResult.WH) + "S")
                                         #route cable group
                                         ops_temp['label'] = ops.label[0]
-
+                elif ops.type == "T":
+                        rospy.wait_for_service('/ELVEZ_platform_handler/guide_info')
+                        my_service = rospy.ServiceProxy('/ELVEZ_platform_handler/guide_info', guide_info)
+                        guideReq = guide_infoRequest()
+                        ops_temp['spot'] = []
+                        for spot_i in ops.spot:
+                                guideReq.jig = spot_i.jig
+                                guideReq.guide = spot_i.id
+                                guideResult = my_service(guideReq)
+                                guide = guideResult.data
+                                ops_temp['spot'].append({'jig': ops.spot[0].jig, 'id': ops.spot[0].id, 'side': ops.spot[0].side, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions})
+                        text_spot_T = str(ops.spot[0].jig) + ' and ' + str(ops.spot[1].jig)
+                        ops_info_text_temp = 'Tape cables between ' + str(text_spot_T)
+                        
                 # con_temp = []
                 # cab_temp = {}
                 # for label in ops.label:

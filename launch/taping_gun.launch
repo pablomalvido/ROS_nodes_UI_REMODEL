@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<launch>
+    <node name="service_gun_socket" pkg="UI_nodes_pkg" type="service_gun_socket.py" output="screen">
+    </node>
+</launch>  

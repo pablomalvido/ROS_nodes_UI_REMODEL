@@ -57,6 +57,7 @@ add_message_files(
   configProp.msg
   forces.msg
   tactile.msg
+  ATC_msg.msg
 )
 
 ## Generate services in the 'srv' folder

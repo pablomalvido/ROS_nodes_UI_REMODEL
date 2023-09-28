@@ -14,6 +14,7 @@ speed_real_mms,20
 offset_x,20
 offset_z,15
 force_control_real,Y
+gun_control_real,Y
 speed_fast_demo_mms,80
 speed_slow_demo_mms,30
 force_control,Y
