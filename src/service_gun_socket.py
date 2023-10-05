@@ -18,7 +18,7 @@ def service_callback(req):
 		my_socket = socket.socket()
 		my_socket.settimeout(5.0)
 		#my_socket.connect(('192.168.43.201', 54000))
-		my_socket.connect(('192.168.43.99', 8080))
+		my_socket.connect(('192.168.64.99', 8070))
 		socket_msg= 'test_client'
 		my_socket.send(str(socket_msg))
 		resp.success = True

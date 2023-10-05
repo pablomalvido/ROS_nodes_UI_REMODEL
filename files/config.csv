@@ -7,14 +7,14 @@ speed_fast_real_mms,40
 connector_tension,5.5
 gripper_slide_dist,36
 cable_tension,4
+gun_control_real,Y
 offset_pick_grasp,15
-use_camera_real,Y
+use_camera_real,N
 offset_pick_z,50
 speed_real_mms,20
 offset_x,20
 offset_z,15
 force_control_real,Y
-gun_control_real,Y
 speed_fast_demo_mms,80
 speed_slow_demo_mms,30
 force_control,Y
@@ -25,8 +25,8 @@ speed_slow_real_mms,10
 speed_tension_demo_mms,20
 offset_force,10
 speed_real_per,0.05
-gripper_open_dist,105
 gripper_grasp_dist,30
+gripper_open_dist,90
 gripper_speed_slow,20
 gripper_speed,30
 grippers_control_demo,N

@@ -31,6 +31,10 @@ from UI_nodes_pkg.msg import process_UIFeedback, process_UIResult, process_UIAct
 from vision_pkg_full_demo.srv import *
 from rosapi.srv import *
 from norbdo_force_sensor.msg import forces
+from motoman_msgs.srv import WriteSingleIO
+from motoman_msgs.srv import WriteSingleIORequest
+from industrial_msgs.msg import RobotStatus
+from industrial_msgs.msg import TriState
 
 
 #ROS init
@@ -237,6 +241,16 @@ grasp_point_global = [0,0]
 gripper_right_finish = False
 gripper_left_finish = False
 
+#ROBOT SAFETY
+def callback_robot_status(msg):
+    global stop_mov
+    if str(msg.e_stopped) == "val: 1":
+        if not stop_mov:
+                print("STOPPING")
+        stop_mov = True
+
+robot_status_subscriber = rospy.Subscriber('/robot_status', RobotStatus, callback_robot_status) 
+
 #INITIALIZE GRIPPER ACTIONS
 def feedback_cb_left_move(fb):
         global left_move_error
@@ -284,8 +298,9 @@ def actuate_grippers(distance, speed, arm, grasp=False):
         global gripper_right_finish
         global gripper_right_distance
         global gripper_left_distance
+        global stop_mov
 
-        if execute_grippers:
+        if execute_grippers and not stop_mov:
                 goal = gripper_ActGoal()
                 if arm=="left":
                        distance = distance - 9
@@ -355,7 +370,8 @@ def actuate_grippers(distance, speed, arm, grasp=False):
 def actuate_gun():
         global step2
         global execute_gun
-        if execute_gun:
+        global stop_mov
+        if execute_gun and not stop_mov:
                 rospy.wait_for_service('/gun/tape')
                 tape_srv = rospy.ServiceProxy('gun/tape', Trigger)
                 tare_res = tape_srv(TriggerRequest())
@@ -797,7 +813,7 @@ class ATC(object):
         IMPORTANT: Modify all the named target poses to match the poses defined in your SRDF file. The name of the move_groups is asumed to be: arm_left, arm_right, arms and torso.
         """
         z_offset = 0.05 #In meters
-        vert_offset = 0.04 #In meters
+        vert_offset = 0.07 #In meters
 
         #Get initial ACM
         rospy.wait_for_service('/get_planning_scene')
@@ -812,7 +828,7 @@ class ATC(object):
 
         # Moving to initial position
         print("Moving robot to ATC position")
-        arms.set_named_target("arms_platform_3")
+        arms.set_named_target("arms_platform_5")
         arms.go(wait=True)
         rospy.sleep(0.5)
         torso.set_named_target("torso_combs")
@@ -825,6 +841,7 @@ class ATC(object):
                 rospy.sleep(0.5)
                 arm_right.set_named_target("arm_right_ATC")
                 arm_right.go(wait=True)
+                #arms.go(wait=True)
                 rospy.sleep(0.5)
                 torso.set_named_target("torso_ATC")
                 torso.go(wait=True)
@@ -837,11 +854,13 @@ class ATC(object):
                 ATC_ang = self.right_ATC_angle
                 self.EEF_right = "None"
         else:
-                arm_right.set_named_target("arm_right_down")
-                arm_right.go(wait=True)
-                rospy.sleep(0.5)
-                arm_left.set_named_target("arm_left_ATC")
-                arm_left.go(wait=True)
+                # arm_right.set_named_target("arm_right_down")
+                # arm_right.go(wait=True)
+                # rospy.sleep(0.5)
+                # arm_left.set_named_target("arm_left_ATC")
+                # arm_left.go(wait=True)
+                arms.set_named_target("arms_ATC_left")
+                arms.go(wait=True)
                 rospy.sleep(0.5)
                 torso.set_named_target("torso_ATC")
                 torso.go(wait=True)
@@ -969,17 +988,27 @@ class ATC(object):
                 return current_tool, False
         #plan, fraction = change_arm.compute_cartesian_path(approach_leave_waypoints2_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        rospy.sleep(0.5)
+        rospy.sleep(2)
 
         print("Insert tool")
-        plan, success = compute_cartesian_path_velocity_control([leave_tool_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
+        plan, success = compute_cartesian_path_velocity_control([leave_tool_waypoints_wrist], [10], arm_side = arm_side, max_linear_accel = 30.0)
         if not success:
                 return current_tool, False
         #plan, fraction = change_arm.compute_cartesian_path(leave_tool_waypoints_wrist, 0.01, 0.0)
         change_arm.execute(plan, wait=True)
-        rospy.sleep(0.5)
+        rospy.sleep(2)
 
         print("Detaching gripper")
+        if real_robot and not stop_mov:
+                rospy.sleep(0.5)
+                pneumatics_service_name = '/write_single_io'
+                rospy.wait_for_service(pneumatics_service_name)
+                my_service = rospy.ServiceProxy(pneumatics_service_name, WriteSingleIO)
+                servReq = WriteSingleIORequest()
+                servReq.address = 10026
+                servReq.value = 1
+                servResult = my_service(servReq)
+                print(servResult.success)
         scene.remove_attached_object(eef_link_arm, name=current_tool)
         self.wait_update_object(current_tool, EE_is_attached=False, EE_is_known=True)
         rospy.sleep(0.5)
@@ -987,7 +1016,7 @@ class ATC(object):
         sceneReq.allowed_collision_matrix = original_acm
         sceneReq.is_diff = True
         sceneResponse = update_scene_service(sceneReq) #Still allow collision between the ATC and the tool (adjacent)
-        rospy.sleep(0.5)
+        rospy.sleep(2)
 
         print("Retracting arm")
         plan, success = compute_cartesian_path_velocity_control([retract_leave_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
@@ -1007,29 +1036,56 @@ class ATC(object):
         change_arm.execute(plan, wait=True)
         rospy.sleep(0.5)
 
-        print("Approach pick tool 2")
-        plan, success = compute_cartesian_path_velocity_control([approach_pick_waypoints2_wrist], [25], arm_side = arm_side, max_linear_accel = 50.0)
-        if not success:
-                return current_tool, False
-        #plan, fraction = change_arm.compute_cartesian_path(approach_pick_waypoints2_wrist, 0.01, 0.0)
-        change_arm.execute(plan, wait=True)
-        rospy.sleep(0.5)
-        sceneReq = PlanningScene()
-        sceneReq.allowed_collision_matrix = new_acm
-        sceneReq.is_diff = True
-        sceneResponse = update_scene_service(sceneReq) #Allow collision between ATC and the new_tool before approaching (adjacent)
-        rospy.sleep(0.5)
+        if new_tool=="EEF_taping_gun" and arm_side == "left":
+                arm_left.set_named_target("arm_left_ATC_gun_offset")
+                arm_left.go(wait=True)
+                rospy.sleep(0.5)
 
-        print("Pick tool")
-        plan, success = compute_cartesian_path_velocity_control([pick_tool_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
-        if not success:
-                return current_tool, False
-        #plan, fraction = change_arm.compute_cartesian_path(pick_tool_waypoints_wrist, 0.01, 0.0)
-        change_arm.execute(plan, wait=True)
-        rospy.sleep(0.5)
+                print("Pick tool")
+                waypoints_ATC1 = []
+                init_pose = change_arm.get_current_pose().pose
+                waypoints_ATC1.append(init_pose)
+                new_pose = copy.deepcopy(init_pose)
+                new_pose.position.x += 0.0675
+                waypoints_ATC1.append(new_pose)
+                plan, success = compute_cartesian_path_velocity_control([waypoints_ATC1], [10], arm_side=arm_side)
+                if success:
+                        execute_plan_async(route_group, plan)
+                rospy.sleep(2)
+
+        else:
+                print("Approach pick tool 2")
+                plan, success = compute_cartesian_path_velocity_control([approach_pick_waypoints2_wrist], [25], arm_side = arm_side, max_linear_accel = 50.0)
+                if not success:
+                        return current_tool, False
+                #plan, fraction = change_arm.compute_cartesian_path(approach_pick_waypoints2_wrist, 0.01, 0.0)
+                change_arm.execute(plan, wait=True)
+                rospy.sleep(0.5)
+                sceneReq = PlanningScene()
+                sceneReq.allowed_collision_matrix = new_acm
+                sceneReq.is_diff = True
+                sceneResponse = update_scene_service(sceneReq) #Allow collision between ATC and the new_tool before approaching (adjacent)
+                rospy.sleep(0.5)
+
+                print("Pick tool")
+                plan, success = compute_cartesian_path_velocity_control([pick_tool_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
+                if not success:
+                        return current_tool, False
+                #plan, fraction = change_arm.compute_cartesian_path(pick_tool_waypoints_wrist, 0.01, 0.0)
+                change_arm.execute(plan, wait=True)
+                rospy.sleep(2)
 
         print("Attaching gripper")
-        rospy.sleep(0.5)
+        if real_robot and not stop_mov:
+                rospy.sleep(0.5)
+                pneumatics_service_name = '/write_single_io'
+                rospy.wait_for_service(pneumatics_service_name)
+                my_service = rospy.ServiceProxy(pneumatics_service_name, WriteSingleIO)
+                servReq = WriteSingleIORequest()
+                servReq.address = 10026
+                servReq.value = 0
+                servResult = my_service(servReq)
+                print(servResult.success)
         scene.attach_mesh(eef_link_arm, new_tool, touch_links=touch_links_arm)
         self.wait_update_object(new_tool, EE_is_attached=True, EE_is_known=False)
         sceneReq = PlanningScene()
@@ -1037,23 +1093,46 @@ class ATC(object):
         sceneReq.is_diff = True
         sceneResponse = update_scene_service(sceneReq) #Update ACM after attaching the new tool
         self.ACM = new_acm
-        rospy.sleep(0.5)
+        rospy.sleep(3)
 
-        print("Retracting arm")
-        plan, success = compute_cartesian_path_velocity_control([retract_pick_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
-        if not success:
-                return new_tool, False
-        #plan, fraction = change_arm.compute_cartesian_path(retract_pick_waypoints_wrist, 0.01, 0.0)
-        change_arm.execute(plan, wait=True)
-        rospy.sleep(0.5)
+        if new_tool=="EEF_taping_gun" and arm_side == "left":
+                print("Retracting arm")
+                waypoints_ATC2 = []
+                init_pose = change_arm.get_current_pose().pose
+                waypoints_ATC2.append(init_pose)
+                new_pose = copy.deepcopy(init_pose)
+                new_pose.position.z += 0.07
+                waypoints_ATC2.append(new_pose)
+                plan, success = compute_cartesian_path_velocity_control([waypoints_ATC2], [10], arm_side=arm_side)
+                if success:
+                        execute_plan_async(route_group, plan)
+                rospy.sleep(0.5)
 
-        print("Retracting arm 2")
-        plan, success = compute_cartesian_path_velocity_control([retract_pick_waypoints2_wrist], [25], arm_side = arm_side, max_linear_accel = 50.0)
-        if not success:
-                return new_tool, False
-        #plan, fraction = change_arm.compute_cartesian_path(retract_pick_waypoints2_wrist, 0.01, 0.0)
-        change_arm.execute(plan, wait=True)
-        rospy.sleep(0.5)
+                print("Retracting arm 2")
+                waypoints_ATC3 = []
+                init_pose = change_arm.get_current_pose().pose
+                waypoints_ATC3.append(init_pose)
+                waypoints_ATC3.append(self.correctPose(ATC_pick_tool_pose_offset_retract_2, arm_side))
+                plan, success = compute_cartesian_path_velocity_control([waypoints_ATC3], [25], arm_side=arm_side)
+                if success:
+                        execute_plan_async(route_group, plan)
+                rospy.sleep(0.5)
+        else:
+                print("Retracting arm")
+                plan, success = compute_cartesian_path_velocity_control([retract_pick_waypoints_wrist], [15], arm_side = arm_side, max_linear_accel = 50.0)
+                if not success:
+                        return new_tool, False
+                #plan, fraction = change_arm.compute_cartesian_path(retract_pick_waypoints_wrist, 0.01, 0.0)
+                change_arm.execute(plan, wait=True)
+                rospy.sleep(0.5)
+
+                print("Retracting arm 2")
+                plan, success = compute_cartesian_path_velocity_control([retract_pick_waypoints2_wrist], [25], arm_side = arm_side, max_linear_accel = 50.0)
+                if not success:
+                        return new_tool, False
+                #plan, fraction = change_arm.compute_cartesian_path(retract_pick_waypoints2_wrist, 0.01, 0.0)
+                change_arm.execute(plan, wait=True)
+                rospy.sleep(0.5)
 
         print("Coming back to initial ATC position")
         plan, fraction = change_arm.compute_cartesian_path(final_waypoints_wrist, 0.01, 0.0)
@@ -1064,7 +1143,7 @@ class ATC(object):
         torso.set_named_target("torso_combs")
         torso.go(wait=True)
         rospy.sleep(0.5)
-        arms.set_named_target("arms_platform_4")
+        arms.set_named_target("arms_platform_5")
         arms.go(wait=True)
         rospy.sleep(0.5)
 
@@ -2285,6 +2364,7 @@ def dual_arm_cartesian_plan(waypoints_left, speed_left, waypoints_right, speed_r
                 check_stateReq.robot_state.joint_state = check_robot_state
                 stateValidityResp = my_service(check_stateReq)
                 if not stateValidityResp.valid:
+                        print(check_robot_state)
                         plan_both_success = False
                         break
 
@@ -2751,16 +2831,26 @@ def compute_cartesian_path_velocity_control_arms_occlusions(waypoints_list, EE_s
                         final_pose2_BG = frame_to_pose(frame_BT * final_frame2_TG)
                         if arm_side == "left":
                                 wp_left = copy.deepcopy(waypoints_list)
-                                speed_left = copy.deepcopy(EE_speed)
+                                if initial_distance < (max_arms_dist + 0.02):
+                                        speed_left = copy.deepcopy([min(EE_speed)*0.75])
+                                        speed_right = [max(EE_speed)*1.25]
+                                else:
+                                        speed_left = copy.deepcopy(EE_speed)
+                                        speed_right = [max(EE_speed)]
                                 success, wp_right_interpolated = interpolate_trajectory(initial_pose = arm2_pose, final_pose = final_pose2_BG, step_pos_min = 0.02, step_deg_min = 5, n_points_max = 20)
-                                wp_right = [wp_right_interpolated]
-                                speed_right = [max(EE_speed)]
+                                wp_right = [wp_right_interpolated]                               
                         elif arm_side == 'right':
                                 wp_right = copy.deepcopy(waypoints_list)
-                                speed_right = copy.deepcopy(EE_speed)
+                                if initial_distance < (max_arms_dist + 0.02):
+                                        speed_right = copy.deepcopy([min(EE_speed)*0.75])
+                                        speed_left = [max(EE_speed)*1.25]
+                                else:
+                                        speed_right = copy.deepcopy(EE_speed)
+                                        speed_left = [max(EE_speed)]
                                 success, wp_left_interpolated = interpolate_trajectory(initial_pose = arm2_pose, final_pose = final_pose2_BG, step_pos_min = 0.02, step_deg_min = 5, n_points_max = 20)
                                 wp_left = [wp_left_interpolated]
-                                speed_left = [max(EE_speed)]
+                                #wp_left = [[arm2_pose, final_pose2_BG]]
+                                #visualize_keypoints_simple(wp_right[0] + wp_left[0])
                         plan, success = dual_arm_cartesian_plan(wp_left, speed_left, wp_right, speed_right, ATC1= ATC1, sync_policy=2)
                 
         else:
@@ -2894,9 +2984,14 @@ def circular_trajectory(center, initial_pose, degree, rot_axis, center_waypoints
                 circle_waypoints_own.append(new_waypoint_circle_own) #frame
                 center_waypoints_own.append(new_waypoint_center_own) #frame
                 #Transform this circular curve that is in its own frame to the real rotation frame
-                circle_waypoints.append(frame_to_pose(RM_world_own * new_waypoint_circle_own)) #pose
-                center_waypoints.append(frame_to_pose(RM_world_own * new_waypoint_center_own)) #pose
-                
+                circle_waypoint_pose_new = frame_to_pose(RM_world_own * new_waypoint_circle_own) #pose
+                center_waypoints_pose_new = frame_to_pose(RM_world_own * new_waypoint_center_own) #pose
+                if not rot_gripper:
+                       circle_waypoint_pose_new.orientation = initial_pose.orientation
+
+                circle_waypoints.append(circle_waypoint_pose_new) #pose
+                center_waypoints.append(center_waypoints_pose_new) #pose
+
         return True, center_waypoints, circle_waypoints
 
 ######################################################################################################################################
@@ -3321,6 +3416,7 @@ def RC_insert(op, route_arm):
         global force_controlled
         global rot_center_up
         global stop_mov_force
+        global count
 
         waypoints1 = []
         if route_arm == "left":
@@ -3436,13 +3532,14 @@ def RC_insert(op, route_arm):
                         # print(dist_z)
                         # print(radius_rot)
                         rot_degree = (math.asin(-dist_z/radius_rot))*180.0/math.pi
+                        print(rot_degree)
 
                         center_waypoints = []
                         circle_waypoints = []
                         success, center_waypoints, circle_waypoints = circular_trajectory(rot_center, init_pose_guides, rot_degree, rot_axis, center_waypoints, circle_waypoints, step = 2, rot_gripper = False)
                         for wp in circle_waypoints:
                                 waypoints2.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
-                        #visualize_keypoints_simple(waypoints2, parent_frame = "/base_link")
+                                
                         #plan, fraction = arm.compute_cartesian_path(waypoints2, 0.01, 0.0)
                         #arm.execute(plan, wait=True)
                         plan, success = compute_cartesian_path_velocity_control([waypoints2], [speed_execution], arm_side=route_arm)
@@ -3459,7 +3556,7 @@ def RC_push_inserted(push_arm):
         routed_guides_copy = copy.deepcopy(routed_guides)
         for guide in routed_guides_copy:
                 top_guide_beginning_backward = get_shifted_pose(guide["pose_corner"],[-(guide['width']/2 + EEF_route[0]/2 + grasp_offset), guide['gap']/2, guide['height'] + z_offset + EEF_route[2], 0, 0, 0])
-                bottom_guide_beginning_backward = get_shifted_pose(guide["pose_corner"],[-(guide['width']/2 + EEF_route[0]/2 + grasp_offset), guide['gap']/2, 0, 0, 0, 0])
+                bottom_guide_beginning_backward = get_shifted_pose(guide["pose_corner"],[-(guide['width']/2 + EEF_route[0]/2 + grasp_offset), guide['gap']/2, guide['height']/2, 0, 0, 0])
                 
                 if step2==3:
                         #Push down with second arm
@@ -3720,6 +3817,7 @@ def RC_route_top(op, route_arm):
                         execute_plan_async(route_group, plan)
                         #arm.execute(plan, wait=True)
 
+        routed_guides.pop(-1)
         if step2==1:
                 for guide in op["guides"]:
                         routed_guides.append(guide)
@@ -3790,6 +3888,7 @@ def RC_insert_lift(op, route_arm):
 
                         if step2==8:
                                 #Bring second hand
+                                actuate_grippers(open_distance, gripper_speed, arm2_side, grasp=False)
                                 waypoints4 = []
                                 prev_guide_forward = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["prev_guide"]['width'] + grasp_offset + EEF_route2[0]/2, op["prev_guide"]['gap']/2, z_offset2, 0, 0, 0])
                                 prev_guide_forward_up = get_shifted_pose(prev_guide_forward, [0, 0, op["prev_guide"]['height'] + z_offset*2 + EEF_route2[2], 0, 0, 0])
@@ -3807,7 +3906,6 @@ def RC_insert_lift(op, route_arm):
                                 #Apply tension movement. ToDo
 
                         if step2==9:
-                                actuate_grippers(open_distance, gripper_speed, arm2_side, grasp=False)
                                 waypoints5 = []
                                 init_pose = arm2.get_current_pose().pose
                                 waypoints5.append(init_pose)
@@ -3887,33 +3985,99 @@ def RC_insert_corner(op, route_arm):
                 #Move up
                 init_pose1 = arm.get_current_pose().pose
                 final_insert_wp = ATC1.antiCorrectPose(init_pose1, route_arm, routing_app = True) 
-                prev_guide_top = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
+                # prev_guide_top = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
+                # waypoints2 = []
+                # waypoints2.append(init_pose1)
+                # insert_up_wp = final_insert_wp
+                # insert_up_wp.position.z = prev_guide_top.position.z
+                # waypoints2.append(ATC1.correctPose(insert_up_wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                 waypoints2 = []
-                #waypoints2.append(ATC1.correctPose(final_insert_wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                 waypoints2.append(init_pose1)
-                insert_up_wp = final_insert_wp
-                insert_up_wp.position.z = prev_guide_top.position.z
-                waypoints2.append(ATC1.correctPose(insert_up_wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                next_guide = get_shifted_pose(op["next_guide"]["pose_corner"],[-x_offset - EEF_route[0], op["next_guide"]['gap']/2, op["next_guide"]['height']/2, 0, 0, 0])
+                waypoints2.append(ATC1.correctPose(next_guide, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                 plan, success = compute_cartesian_path_velocity_control([waypoints2], [speed_execution], arm_side=route_arm)
                 if success:
                         execute_plan_async(route_group, plan)
                         #arm.execute(plan, wait=True)
 
+        # if step2==8:
+        #         #Move to next guide
+        #         prev_guide_top = get_shifted_pose(op["next_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
+        #         waypoints3 = []
+        #         #waypoints3.append(waypoints2[-1])
+        #         init_pose = arm.get_current_pose().pose
+        #         waypoints3.append(init_pose)
+        #         waypoints3.append(ATC1.correctPose(prev_guide_top, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+        #         plan, success = compute_cartesian_path_velocity_control([waypoints3], [speed_execution], arm_side=route_arm)
+        #         if success:
+        #                 execute_plan_async(route_group, plan)
+        #                 #arm.execute(plan, wait=True)
+
+        #         prev_guide_center = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["prev_guide"]['width']/2, op["prev_guide"]['gap']/2, op["prev_guide"]['height']/2, 0, 0, 0])
+        #         rot_center = copy.deepcopy(prev_guide_center)
+
+        # if step2==9:
+        #         routed_guides.append(op['next_guide'])
+
         if step2==8:
-                #Move to next guide
-                prev_guide_top = get_shifted_pose(op["next_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
+                #Bring second hand
                 waypoints3 = []
-                #waypoints3.append(waypoints2[-1])
-                init_pose = arm.get_current_pose().pose
+                prev_guide_backward = get_shifted_pose(op["prev_guide"]["pose_corner"],[- grasp_offset - EEF_route2[0]/2, op["prev_guide"]['gap']/2, z_offset2, 0, 0, 0])
+                prev_guide_backward_up = get_shifted_pose(prev_guide_backward, [0, 0, op["prev_guide"]['height'] + z_offset*2 + EEF_route2[2], 0, 0, 0])
+                prev_guide_backward_up_corrected = ATC1.correctPose(prev_guide_backward_up, arm2_side, rotate = True, ATC_sign = -1, routing_app = True, route_arm = False)
+                init_pose = arm2.get_current_pose().pose
                 waypoints3.append(init_pose)
-                waypoints3.append(ATC1.correctPose(prev_guide_top, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
-                plan, success = compute_cartesian_path_velocity_control([waypoints3], [speed_execution], arm_side=route_arm)
+                init_pose_up = copy.deepcopy(init_pose)
+                init_pose_up.position.z = prev_guide_backward_up_corrected.position.z
+                waypoints3.append(init_pose_up)
+                waypoints3.append(ATC1.correctPose(prev_guide_backward_up, arm2_side, rotate = True, ATC_sign = -1, routing_app = True, route_arm = False))
+                plan, success = compute_cartesian_path_velocity_control([waypoints3], [fast_speed_execution], arm_side=arm2_side)
+                if success:
+                        execute_plan_async(group2, plan)
+                        #arm2.execute(plan, wait=True)
+                #Apply tension movement. ToDo
+
+        if step2==9:
+                actuate_grippers(open_distance, gripper_speed, arm2_side, grasp=False)
+                waypoints4 = []
+                init_pose = arm2.get_current_pose().pose
+                waypoints4.append(init_pose)
+                prev_guide_backward = get_shifted_pose(op["prev_guide"]["pose_corner"],[- grasp_offset - EEF_route2[0]/2, op["prev_guide"]['gap']/2, z_offset2, 0, 0, 0])
+                waypoints4.append(ATC1.correctPose(prev_guide_backward, arm2_side, rotate = True, ATC_sign = -1, routing_app = True, route_arm = False))
+                plan, success = compute_cartesian_path_velocity_control([waypoints4], [speed_execution], arm_side=arm2_side)
+                if success:
+                        execute_plan_async(group2, plan)
+                rot_center = copy.deepcopy(prev_guide_backward)
+
+        if step2==10:
+                actuate_grippers(grasp_distance, gripper_speed, arm2_side, grasp=True)
+                step2=11
+
+        if step2==11:
+                #Slide to the top
+                waypoints5 = []
+                init_pose = arm.get_current_pose().pose
+                waypoints5.append(init_pose)
+                next_guide_top_beginning = get_shifted_pose(op["next_guide"]["pose_corner"],[-EEF_route[0], op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
+                waypoints5.append(ATC1.correctPose(next_guide_top_beginning, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                plan, success = compute_cartesian_path_velocity_control([waypoints5], [speed_execution], arm_side=route_arm)
                 if success:
                         execute_plan_async(route_group, plan)
                         #arm.execute(plan, wait=True)
 
-                prev_guide_center = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["prev_guide"]['width']/2, op["prev_guide"]['gap']/2, op["prev_guide"]['height']/2, 0, 0, 0])
-                rot_center = copy.deepcopy(prev_guide_center)
+        if step2==12:
+                waypoints6 = []
+                next_guide_top_beginning = get_shifted_pose(op["next_guide"]["pose_corner"],[-EEF_route[0], op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
+                next_guide_top = get_shifted_pose(op["next_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
+                waypoints6.append(ATC1.correctPose(next_guide_top_beginning, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                waypoints6.append(ATC1.correctPose(next_guide_top, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                plan, success = compute_cartesian_path_velocity_control([waypoints6], [speed_execution], arm_side=route_arm)
+                if success:
+                        execute_plan_async(route_group, plan)
+                        #arm.execute(plan, wait=True)
+
+        if step2==13:
+                routed_guides.append(op['next_guide'])
 
 
 def RC_insert_grasp_corner(op, route_arm):
@@ -3949,6 +4113,7 @@ def RC_insert_grasp_corner(op, route_arm):
         next_guide_beginning = get_shifted_pose(op["next_guide"]["pose_corner"],[-EEF_route[0]/2, op["next_guide"]['gap']/2, z_offset2, 0, 0, 0])
         next_guide_top = get_shifted_pose(op["next_guide"]["pose_corner"],[op["next_guide"]['width']/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
         next_guide_top_beginning = get_shifted_pose(op["next_guide"]["pose_corner"],[-EEF_route[0]/2, op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])
+        next_guide_top_beginning_route_visualize = get_shifted_pose(op["next_guide"]["pose_corner"],[0,0,0,0,0,0])
         next_guide_top_beginning_route_offset1 = get_shifted_pose(op["next_guide"]["pose_corner"],[-max(EEF_route[0]/2 + x_offset, EEF_route[1]/2), op["next_guide"]['gap']/2, op["next_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0])        
         prev_guide_end = get_shifted_pose(op["prev_guide"]["pose_corner"],[EEF_route[0]/2, op["next_guide"]['gap']/2, 0, 0, 0, 0])
         
@@ -3976,8 +4141,10 @@ def RC_insert_grasp_corner(op, route_arm):
                 waypoints3_wrist.append(next_guide_top_beginning_route_offset2)
                 waypoints3 = []
                 for wp in waypoints3_wrist:
-                        waypoints3.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1))
+                        #waypoints3.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1))
+                        waypoints3.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                 waypoints3[0] = init_pose1
+                #visualize_keypoints_simple([next_guide_top_beginning_route_offset2]+[next_guide_top_beginning_route_offset1]+[next_guide_top_beginning_route_visualize])
                 plan, success = compute_cartesian_path_velocity_control([waypoints3], [speed_execution], arm_side=route_arm)
                 if success:
                         execute_plan_async(route_group, plan)
@@ -3994,59 +4161,86 @@ def RC_insert_grasp_corner(op, route_arm):
                 init_pose_up.position.z += z_offset*2 + op["prev_guide"]["height"]
                 waypoints4.append(init_pose_up)
                 grasp_pose_up = get_shifted_pose(next_guide_top_beginning_route_offset1, [0, 0, z_offset+ EEF_route2[2], 0, 0, 0])
-                waypoints4.append(ATC1.correctPose(grasp_pose_up, arm2_side, rotate = True, ATC_sign = -1))
-                waypoints4.append(ATC1.correctPose(next_guide_top_beginning_route_offset1, arm2_side, rotate = True, ATC_sign = -1))
+                init_pose_rotated = copy.deepcopy(grasp_pose_up)
+                init_pose_up_anticorrected = ATC1.antiCorrectPose(init_pose_up, arm2_side) 
+                init_pose_rotated.position = init_pose_up_anticorrected.position
+                waypoints4.append(ATC1.correctPose(init_pose_rotated, arm2_side, rotate = True, ATC_sign = -1))
                 plan, success = compute_cartesian_path_velocity_control([waypoints4], [speed_execution], arm_side=arm2_side)
                 if success:
                         execute_plan_async(group2, plan)
-                        #arm2.execute(plan, wait=True)
 
         if step2==9:
+                actuate_grippers(open_distance, gripper_speed, arm2_side, grasp=False)
+
+                waypoints42 = []
+                init_pose = arm2.get_current_pose().pose
+                waypoints42.append(init_pose)
+                waypoints42.append(ATC1.correctPose(grasp_pose_up, arm2_side, rotate = True, ATC_sign = -1))
+                next_guide_top_beginning_route_offset1.position.z += 0.012
+                waypoints42.append(ATC1.correctPose(next_guide_top_beginning_route_offset1, arm2_side, rotate = True, ATC_sign = -1))
+                plan, success = compute_cartesian_path_velocity_control([waypoints42], [speed_execution], arm_side=arm2_side)
+                if success:
+                        execute_plan_async(group2, plan)
+                        #arm2.execute(plan, wait=True)
+                        #visualize_keypoints_simple([next_guide_top_beginning_route_offset2, grasp_pose_up])
+
+        if step2==10:
                 #Apply tension movement. ToDo
+                actuate_grippers(slide_distance, gripper_speed, arm2_side, grasp=False)
                 actuate_grippers(grasp_distance, gripper_speed, route_arm, grasp=True)
 
                 #Move arm down 
                 waypoints5 = []
                 init_pose = arm.get_current_pose().pose
                 init_pose2 = arm2.get_current_pose().pose
+                init_pose_anticorrected = ATC1.antiCorrectPose(init_pose, route_arm, routing_app = True)
+                init_pose2_anticorrected = ATC1.antiCorrectPose(init_pose2, arm2_side)
                 waypoints5.append(init_pose)
-                pose_down = copy.deepcopy(init_pose)
-                pose_down.position.z = init_pose2.position.z
-                waypoints5.append(pose_down)
+                pose_down = copy.deepcopy(init_pose_anticorrected)
+                pose_down.position.z = init_pose2_anticorrected.position.z
+                waypoints5.append(ATC1.correctPose(pose_down, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                 plan, success = compute_cartesian_path_velocity_control([waypoints5], [speed_execution], arm_side=route_arm)
                 if success:
                         execute_plan_async(route_group, plan)
                         #arm.execute(plan, wait=True)
 
-        if step2==10:
+        if step2==11:
+                actuate_grippers(grasp_distance, gripper_speed, arm2_side, grasp=True)
                 #Rotate arms
                 waypoints6_circ_wrist = []
                 waypoints6_center_wrist = []
                 waypoints6_circ = []
                 waypoints6_center = []
                 init_pose = arm.get_current_pose().pose
-                init_pose_guides = ATC1.antiCorrectPose(init_pose, route_arm)
-
-                corner_center = next_guide_top_beginning_route_offset1
-                radius_rot = compute_distance(rot_center, init_pose_guides)
+                init_pose_guides = ATC1.antiCorrectPose(init_pose, route_arm, routing_app = True)
+                init_pose2 = arm2.get_current_pose().pose
+                corner_center = ATC1.antiCorrectPose(init_pose2, arm2_side)
+                radius_rot = compute_distance(corner_center, init_pose_guides)
+                #visualize_keypoints_simple([init_pose_guides, corner_center], "/base_link")
                 
                 line_center = get_shifted_pose(corner_center, [1,0,0,0,0,0])
                 angle_center = math.atan2(line_center.position.y - corner_center.position.y, line_center.position.x - corner_center.position.x)
                 line_guide = get_shifted_pose(next_guide_top, [1,0,0,0,0,0])
                 angle_guide = math.atan2(line_guide.position.y - next_guide_top.position.y, line_guide.position.x - next_guide_top.position.x)
-                rot_degree = angle_guide - angle_center 
+                rot_rad = angle_guide - angle_center 
+                rot_degree = (rot_rad*180)/math.pi
+                print("##############ANGLE")
+                print(rot_degree)
 
                 center_waypoints = []
                 circle_waypoints = []
-                success, waypoints6_center_wrist, waypoints6_circ_wrist = circular_trajectory(rot_center, init_pose_guides, rot_degree, [0,0,1], waypoints6_center_wrist, waypoints6_circ_wrist, step = 2, rot_gripper = False)
+                success, waypoints6_center_wrist, waypoints6_circ_wrist = circular_trajectory(corner_center, init_pose_guides, rot_degree, [0,0,-1], waypoints6_center_wrist, waypoints6_circ_wrist, step = 2, rot_gripper = True)
                 for wp in waypoints6_circ_wrist:
-                        waypoints6_circ.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1))
+                        waypoints6_circ.append(ATC1.correctPose(wp, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                 for wp in waypoints6_center_wrist:
                         waypoints6_center.append(ATC1.correctPose(wp, arm2_side, rotate = True, ATC_sign = -1))
+
+                #visualize_keypoints_simple(waypoints6_center_wrist+waypoints6_circ_wrist)
 
                 if route_arm == "left":
                         plan, success = dual_arm_cartesian_plan([waypoints6_circ], [speed_execution], [waypoints6_center], [speed_execution], ATC1= ATC1, sync_policy=1)
                 elif route_arm == "right":
+                        #visualize_keypoints_simple(waypoints6_center + waypoints6_circ, "/base_link")
                         plan, success = dual_arm_cartesian_plan([waypoints6_center], [speed_execution], [waypoints6_circ], [speed_execution], ATC1= ATC1, sync_policy=1)
                 execute_plan_async("arms", plan)
                 # arms.execute(plan)
@@ -4054,6 +4248,8 @@ def RC_insert_grasp_corner(op, route_arm):
                 rot_center_jigs = arm.get_current_pose().pose
                 rot_center = ATC1.antiCorrectPose(rot_center_jigs, arm2_side)
                 rot_center_up = True
+
+                actuate_grippers(slide_distance, gripper_speed, arm2_side, grasp=False)
 
 
 def RC_insert_final(op, route_arm):
@@ -4108,7 +4304,9 @@ def RC_insert_final(op, route_arm):
                 #        plan, success = dual_arm_cartesian_plan(waypoints4_2, [speed_execution], waypoints4_1, [speed_execution], ATC1= ATC1, sync_policy=2)
 
                 init_pose2 = arm2.get_current_pose().pose
-                if ((init_pose2.position.z) > (init_pose.position.z + op["prev_guide"]["height"])):
+                init_pose_anticorrected = ATC1.antiCorrectPose(init_pose, route_arm, routing_app = True)
+                init_pose2_anticorrected = ATC1.antiCorrectPose(init_pose2, arm2_side)
+                if ((init_pose2_anticorrected.position.z) > (init_pose_anticorrected.position.z + op["prev_guide"]["height"])): #CHANGE THE WRISTS HAVE DIFFERENT SIZES
                         plan, success = compute_cartesian_path_velocity_control([waypoints4_1], [speed_execution], arm_side=route_arm)
                         if success:
                                 execute_plan_async(route_group, plan)
@@ -4652,7 +4850,7 @@ def grasp_cables(op, route_arm, separated = False):
                         #rospy.sleep(1) #REDUCE. Original 1
                         if separated:
                                 init_pose = arm.get_current_pose().pose
-                                retract_z = get_shifted_pose(op["spot"]["pose_corner"], [0, 0, op["spot"]["height"] + z_offset, 0, 0, 0])
+                                retract_z = get_shifted_pose(op["spot"]["pose_corner"], [0, 0, op["spot"]["height"] + z_offset*2, 0, 0, 0])
                                 retract_z_corrected = ATC1.correctPose(retract_z, route_arm, rotate = True, routing_app = routing_app, ATC_sign = -1, secondary_frame=True)
                                 new_pose = copy.deepcopy(init_pose)
                                 new_pose.position.z = retract_z_corrected.position.z
@@ -4725,6 +4923,7 @@ def tape(tape_guides, grasp_guide):
                         if success:
                                 execute_plan_async(motion_group_plan, plan)
                         print("STEP1")
+                        rospy.sleep(0.5)
 
                 if step2 == 2:
                         waypoints_T2 = []
@@ -4776,6 +4975,8 @@ def tape(tape_guides, grasp_guide):
                 if step2 == 8:
                         retract_arm(grasp_arm, grasp_guide)
 
+                #visualize_keypoints_simple([tape_pose, tape_pose_offset])
+
 
 def stop_function(message):
         global stop_mov
@@ -4792,7 +4993,8 @@ def move_home():
         move_group_async("torso")
         # torso.go(wait=True)
         rospy.sleep(0.5)
-        arms.set_named_target("arms_platform_3_corrected")
+        #arms.set_named_target("arms_platform_3_corrected")
+        arms.set_named_target("arms_platform_5")
         move_group_async("arms")
         # arms.go(wait=True)
         rospy.sleep(0.5)
@@ -4839,13 +5041,19 @@ def update_route_arm_info(op):
                
 
 def check_tools(op):
+        global step2
         if op['type'] != 'T':
                 if ATC1.EEF_right=="EEF_taping_gun":
                         #MOVE TO A CONFIGURATION WITH THE GUN HORIZONTAL IN SEVERAL STEPS TO AVOID COLLISION (MOVE CONFIG)
                         changed_tool, success = ATC1.changeTool("EEF_gripper_right", "right")
+                        step2 = 0
                 elif ATC1.EEF_left=="EEF_taping_gun":
                         #MOVE TO A CONFIGURATION WITH THE GUN HORIZONTAL IN SEVERAL STEPS TO AVOID COLLISION (MOVE CONFIG)
+                        #arms.set_named_target("arms_left_tape")
+                        #arms.go(wait=True)
+                        #rospy.sleep(0.5)
                         changed_tool, success = ATC1.changeTool("EEF_gripper_left", "left")
+                        step2 = 0
         else:
                 print("TAPE")
                 if (op["spot"][0]["pose_corner"].position.x <= op["spot"][2]["pose_corner"].position.x) and (op["spot"][1]["pose_corner"].position.x <= op["spot"][2]["pose_corner"].position.x):   #Tape with left
@@ -4853,15 +5061,23 @@ def check_tools(op):
                         if ATC1.EEF_right=="EEF_taping_gun":
                                 print("HAVE TO CHANGE RIGHT TOOL")
                                 changed_tool, success = ATC1.changeTool("EEF_gripper_right", "right")
+                                step2 = 0
                         if ATC1.EEF_left=="EEF_gripper_left":
                                 print("HAVE TO CHANGE LEFT TOOL")
                                 changed_tool, success = ATC1.changeTool("EEF_taping_gun", "left")
+                                step2 = 0
+                                #arms.set_named_target("arms_left_tape")
+                                #arms.go(wait=True)
+                                #rospy.sleep(0.5)
                 else: #Tape with right
                         if ATC1.EEF_left=="EEF_taping_gun":
                                 changed_tool, success = ATC1.changeTool("EEF_gripper_left", "left")
+                                step2 = 0
                         if ATC1.EEF_right=="EEF_gripper_right":
                                 changed_tool, success = ATC1.changeTool("EEF_taping_gun", "right")
-                #MOVE TO A CONFIGURATION WITH THE GUN VERTICAL IN SEVERAL STEPS TO AVOID COLLISION (MOVE CONFIG)
+                                step2 = 0
+                                #MOVE TO A CONFIGURATION WITH THE GUN VERTICAL IN SEVERAL STEPS TO AVOID COLLISION (MOVE CONFIG)
+                
        
 
 def execute_operation(op):
@@ -5029,6 +5245,7 @@ rospy.Service('/process/all_operations', StringArray, all_operations_callback)
 
 def ATC_callback(req):
         global modeUI
+        global step2
         new_tool_name = 'EEF_'+req.new_tool
         if ATC1.EEF_right != new_tool_name:
                 msg = String()
@@ -5036,6 +5253,7 @@ def ATC_callback(req):
                 modeUI="Running"
                 mode_publisher.publish(msg)
                 changed_tool, success = ATC1.changeTool(new_tool_name, req.arm_side)
+                step2 = 0
                 if success:
                         msg = ATC_msg()
                         msg.new_tool = changed_tool
@@ -5061,21 +5279,26 @@ if __name__ == '__main__':
         touch_links_right = ["right_tool_exchanger"]
 
         gripper_left_ATC_frame = PyKDL.Frame()
-        gripper_left_ATC_frame.p = PyKDL.Vector(0.85, 0.3, 1.5)
+        gripper_left_ATC_frame.p = PyKDL.Vector(0.750469, 0.1866, 1.47921) #From the cell
         gripper_left_ATC_frame.M.DoRotY(1.57)
         gripper_left_ATC_frame.M.DoRotZ(3.14)
         gripper_left_ATC_pose = frame_to_pose(gripper_left_ATC_frame)
 
         gripper_right_ATC_frame = PyKDL.Frame()
-        gripper_right_ATC_frame.p = PyKDL.Vector(0.85, -0.3, 1.5)
+        gripper_right_ATC_frame.p = PyKDL.Vector(0.8, -0.3, 1.5)
         gripper_right_ATC_frame.M.DoRotY(1.57)
         gripper_right_ATC_frame.M.DoRotZ(3.14)
         gripper_right_ATC_pose = frame_to_pose(gripper_right_ATC_frame)
 
         gripper_end_frame_L = PyKDL.Frame() 
-        gripper_end_frame_L.p = PyKDL.Vector(0.094, 0, 0.1977)#(0.0998, 0, 0.2356) #Center pad
+        gripper_end_frame_L.p = PyKDL.Vector(0.094, 0, 0.2527)#(0.0998, 0, 0.2356) #Center pad with ATC Z+0.068-0,013
         gripper_end_frame_L2 = PyKDL.Frame()
-        gripper_end_frame_L2.p = PyKDL.Vector(0.094, 0, 0.21)#(0.0998, 0, 0.25) #Nail
+        gripper_end_frame_L2.p = PyKDL.Vector(0.094, 0, 0.266)#(0.0998, 0, 0.25) #Nail with ATC Z+0.068-0,013
+        # gripper_end_frame_L = PyKDL.Frame() 
+        # gripper_end_frame_L.p = PyKDL.Vector(0.094, 0, 0.1977)
+        # gripper_end_frame_L2 = PyKDL.Frame()
+        # gripper_end_frame_L2.p = PyKDL.Vector(0.094, 0, 0.21)
+        
         gripper_end_frame_R = PyKDL.Frame() 
         gripper_end_frame_R.p = PyKDL.Vector(0.094, 0, 0.1977) #Center pad
         gripper_end_frame_R2 = PyKDL.Frame() 
@@ -5086,18 +5309,28 @@ if __name__ == '__main__':
         fingers_tip_z = 0.0153 #z distance from the fingers center to the tip
         fingers_dim = [fingers_thickness, fingers_width, fingers_tip_z]
 
+        # gun_ATC_frame = PyKDL.Frame()
+        # gun_ATC_frame.p = PyKDL.Vector(0.782896, -0.0554083, 1.52741)
+        # gun_ATC_frame.M.DoRotY(1.57)
+        # gun_ATC_frame.M.DoRotZ(3.14)
+        # gun_ATC_pose = frame_to_pose(gun_ATC_frame)
+        # gun_end_frame = PyKDL.Frame()
+        # gun_end_frame.p = PyKDL.Vector(0.105, -0.055, 0.11) #Deepness, Distance to wall, Distance to guide
+        # gun_end_frame.M.DoRotY(1.57)
         gun_ATC_frame = PyKDL.Frame()
-        gun_ATC_frame.p = PyKDL.Vector(0.85, 0, 1.5)
+        gun_ATC_frame.p = PyKDL.Vector(0.6827, -0.0295, 1.52)
         gun_ATC_frame.M.DoRotY(1.57)
         gun_ATC_frame.M.DoRotZ(3.14)
         gun_ATC_pose = frame_to_pose(gun_ATC_frame)
         gun_end_frame = PyKDL.Frame()
-        gun_end_frame.p = PyKDL.Vector(0.1, -0.055, 0.086) 
-        gun_end_frame.M.DoRotY(1.57)
+        gun_end_frame.p = PyKDL.Vector(-0.01, -0.071, 0.23463) #Deepness, Distance to wall, Distance to guide
+        gun_end_frame.M.DoRotZ(3.141592)
         
-        EE_file_path_gripper_L = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gripper_side_simplified_left_noATC_v4.stl'
+        #EE_file_path_gripper_L = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gripper_side_simplified_left_noATC_v4.stl'
+        EE_file_path_gripper_L = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gripper_side_simplified_left_ATC_v4_ROS.stl'
         EE_file_path_gripper_R = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gripper_side_simplified_right_noATC_v4.stl'
-        EE_file_path_gun = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gun_3.stl'
+        #EE_file_path_gun = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gun_simplified_ros.stl'
+        EE_file_path_gun = str(rospack.get_path('motoman_sda10f_support')) + '/meshes/EE/gun_vert_v3_ROS.stl'
 
         gripper_left = EEF(EE_end_frame = gripper_end_frame_L, EE_end_frame2=gripper_end_frame_L2, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_left_ATC_frame, name = "EEF_gripper_left", path = EE_file_path_gripper_L)
         gripper_right = EEF(EE_end_frame = gripper_end_frame_R, EE_end_frame2=gripper_end_frame_R2, x = 0.073, y = 0.025, z = 0.24, fingers_dim = fingers_dim, ATC_frame = gripper_right_ATC_frame, name = "EEF_gripper_right", path = EE_file_path_gripper_R)
@@ -5109,8 +5342,9 @@ if __name__ == '__main__':
 
         #Define the ATC instance
         max_arms_dist = frame_to_pose(gripper_end_frame_L).position.x + frame_to_pose(gripper_end_frame_R).position.x + fingers_thickness + 0.05
+        ATC1 = ATC(left_tool=gripper_left, right_tool=gripper_right, eef_link_left=eef_link_left, eef_link_right=eef_link_right, ATC_tools=[gun], left_ATC_angle=0.7854, right_ATC_angle=-0.7854, left_ATC_dist=0.083, right_ATC_dist=0.054)
         #ATC1 = ATC(left_tool=gripper_left, right_tool=gripper_right, eef_link_left=eef_link_left, eef_link_right=eef_link_right, ATC_tools=[], left_ATC_angle=0.7854, right_ATC_angle=-0.7854, left_ATC_dist=0.054, right_ATC_dist=0.054)
-        ATC1 = ATC(left_tool=gun, right_tool=gripper_right, eef_link_left=eef_link_left, eef_link_right=eef_link_right, ATC_tools=[gripper_left], left_ATC_angle=0.7854, right_ATC_angle=-0.7854, left_ATC_dist=0.054, right_ATC_dist=0.054)
+        #ATC1 = ATC(left_tool=gun, right_tool=gripper_right, eef_link_left=eef_link_left, eef_link_right=eef_link_right, ATC_tools=[gripper_left], left_ATC_angle=0.7854, right_ATC_angle=-0.7854, left_ATC_dist=0.083, right_ATC_dist=0.054)
 
         ##### Define target points
         #Get all operations: Pick cable from combs, Place cable in guide, Route cable through guide 1 and 2
@@ -5284,5 +5518,6 @@ if __name__ == '__main__':
         arm2 = arm_left
         EEF_route = ATC1.EEF_dict[ATC1.EEF_right].fingers_dim
         move_away2_sign = -1
+        count = 0
 
         rospy.spin()
