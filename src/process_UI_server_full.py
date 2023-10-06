@@ -84,6 +84,7 @@ status_movement = 0
 status_movement2 = 0
 stop_mov = False
 force_controlled = False
+larger_slide = False
 
 ops_info_text=[]
 
@@ -213,7 +214,10 @@ try:
         z_offset2 = float(config['offset_z'])/1000 #0.02 (What is this?)
         grasp_offset = float(config['offset_grasp'])/1000 #0.005
         force_offset = float(config['offset_force'])/1000 #0.01
-        pick_grasp_offset = float(config['offset_pick_grasp'])/1000 #0.01
+        #pick_grasp_offset = float(config['offset_pick_grasp'])/1000 #0.015
+        pick_grasp_offset = {}
+        pick_grasp_offset['WH1'] = 0.015
+        pick_grasp_offset['WH3'] = 0.0255
         z_offset_pick = float(config['offset_pick_z'])/1000 #0.05
         z_offset_photo = float(config['offset_photo_z'])/1000 #0.1
         gun_nozzle_offset = 0.1
@@ -3183,7 +3187,7 @@ def circular_trajectory(center, initial_pose, degree, rot_axis, center_waypoints
 #################################################################################################################
 
 #Subscribers
-def callback_force(force):
+def callback_forceR(force):
         global force_limit
         global force_controlled
         global stop_mov_force
@@ -3197,7 +3201,23 @@ def callback_force(force):
                         arm_left.stop()
                         arm_right.stop()
 
-subsForce = rospy.Subscriber('/right_norbdo/forces', forces, callback_force)  
+subsForce = rospy.Subscriber('/right_norbdo/forces', forces, callback_forceR)  
+
+def callback_forceL(force):
+        global force_limit
+        global force_controlled
+        global stop_mov_force
+        if force_controlled:
+
+                Fxy = math.sqrt(force.Fx**2 + force.Fy**2)
+                if force_limit < Fxy and not stop_mov_force:
+                        print("Force is too high, stop the motion")
+                        print(force)
+                        stop_mov_force = True
+                        arm_left.stop()
+                        arm_right.stop()
+
+subsForce = rospy.Subscriber('/left_norbdo/forces', forces, callback_forceL)  
 
 def callback_status_exec_traj(status):
     global status_movement2
@@ -3299,6 +3319,7 @@ def route_cables(op, connector_op, route_arm="left"):
         global step2
         global stop_mov
         global process_actionserver
+        global larger_slide
         #IMPORTANT!!! We need to have sticks as corners too when the direction between guides is not the direction of the next guide
         min_dist_guides = 0.05
         max_angle_diff = 10.0*(math.pi/180.0)
@@ -3381,6 +3402,10 @@ def route_cables(op, connector_op, route_arm="left"):
 
         #execute tasks of the created routing plan
         i=0
+        if True:
+                larger_slide = True
+        else:
+                larger_slide = False
         for op in routing_operations2:
                 if i == step1:
                         print(op['op'])
@@ -3417,6 +3442,7 @@ def RC_insert(op, route_arm):
         global rot_center_up
         global stop_mov_force
         global count
+        global larger_slide
 
         waypoints1 = []
         if route_arm == "left":
@@ -3436,7 +3462,10 @@ def RC_insert(op, route_arm):
         if step2==0:
                 #Apply tension
                 init_pose = arm.get_current_pose().pose
-                top_guide_end = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["prev_guide"]['width']/4 + EEF_route[0]/2, op["prev_guide"]['gap']/2, op["prev_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0]) #THE GUIDE WIDTH SHOULD BE DIVIDED BY 2, NOT BY 4
+                if larger_slide:
+                        top_guide_end = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["prev_guide"]['width'] + EEF_route[0]/2 + 0.003, op["prev_guide"]['gap']/2, op["prev_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0]) #THE GUIDE WIDTH SHOULD BE DIVIDED BY 2, NOT BY 4
+                else:
+                        top_guide_end = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["prev_guide"]['width']/4 + EEF_route[0]/2, op["prev_guide"]['gap']/2, op["prev_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0]) #THE GUIDE WIDTH SHOULD BE DIVIDED BY 2, NOT BY 4
                 waypoints1.append(init_pose)
                 waypoints1.append(ATC1.correctPose(top_guide_end, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                 plan, success = compute_cartesian_path_velocity_control([waypoints1], [speed_execution], arm_side=route_arm)
@@ -3448,7 +3477,10 @@ def RC_insert(op, route_arm):
                 actuate_grippers(grasp_distance, gripper_speed, route_arm, grasp=True)
 
                 waypoints12 = []
-                top_guide_end = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["prev_guide"]['width']/4 + EEF_route[0]/2, op["prev_guide"]['gap']/2, op["prev_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0]) #THE GUIDE WIDTH SHOULD BE DIVIDED BY 2, NOT BY 4
+                if larger_slide:
+                        top_guide_end = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["prev_guide"]['width'] + EEF_route[0]/2 + 0.003, op["prev_guide"]['gap']/2, op["prev_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0]) #THE GUIDE WIDTH SHOULD BE DIVIDED BY 2, NOT BY 4
+                else:
+                        top_guide_end = get_shifted_pose(op["prev_guide"]["pose_corner"],[op["prev_guide"]['width']/4 + EEF_route[0]/2, op["prev_guide"]['gap']/2, op["prev_guide"]['height'] + z_offset + EEF_route[2], 0, 0, 0]) #THE GUIDE WIDTH SHOULD BE DIVIDED BY 2, NOT BY 4
                 waypoints12.append(ATC1.correctPose(top_guide_end, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
                 top_guide_forward = get_shifted_pose(top_guide_end,[force_offset, 0, 0, 0, 0, 0])
                 waypoints12.append(ATC1.correctPose(top_guide_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
@@ -3459,6 +3491,8 @@ def RC_insert(op, route_arm):
                         print("WAITING FOR TARING")
                         tare_forces_srv = rospy.ServiceProxy('right_norbdo/tare', Trigger)
                         tare_res = tare_forces_srv(TriggerRequest())
+                        tare_forces_srvL = rospy.ServiceProxy('left_norbdo/tare', Trigger)
+                        tare_res = tare_forces_srvL(TriggerRequest())
                 rospy.sleep(0.5) #REDUCE. Original 0.5
                 print("TARED CORRECTLY")
                 stop_mov_force = False #reset this value before activating the force_controlled
@@ -3556,7 +3590,7 @@ def RC_push_inserted(push_arm):
         routed_guides_copy = copy.deepcopy(routed_guides)
         for guide in routed_guides_copy:
                 top_guide_beginning_backward = get_shifted_pose(guide["pose_corner"],[-(guide['width']/2 + EEF_route[0]/2 + grasp_offset), guide['gap']/2, guide['height'] + z_offset + EEF_route[2], 0, 0, 0])
-                bottom_guide_beginning_backward = get_shifted_pose(guide["pose_corner"],[-(guide['width']/2 + EEF_route[0]/2 + grasp_offset), guide['gap']/2, guide['height']/2, 0, 0, 0])
+                bottom_guide_beginning_backward = get_shifted_pose(guide["pose_corner"],[-(guide['width']/2 + EEF_route[0]/2 + grasp_offset), guide['gap']/2, guide['height']/4, 0, 0, 0])
                 
                 if step2==3:
                         #Push down with second arm
@@ -4089,6 +4123,7 @@ def RC_insert_grasp_corner(op, route_arm):
         global slide_distance
         global grasp_distance
         global gripper_speed
+        global force_offset
         #Apply tension (Move forward 3cm max (stopped by "force controller"))
         #Insert (Circular motion)
         #Slide and lift (till x_offset)
@@ -4150,9 +4185,34 @@ def RC_insert_grasp_corner(op, route_arm):
                         execute_plan_async(route_group, plan)
                         #arm.execute(plan, wait=True)
 
-        #Apply tension ToDo
-
         if step2==8:
+        #Apply tension ToDo
+                actuate_grippers(grasp_distance, gripper_speed, route_arm, grasp=True)
+
+                waypoints31 = []
+                init_pose1 = arm.get_current_pose().pose
+                waypoints31.append(init_pose1)
+                init_pose1_anticorrected = ATC1.antiCorrectPose(init_pose1, route_arm, routing_app = True)
+                tension_pose = get_shifted_pose(init_pose1_anticorrected,[force_offset, 0, 0, 0, 0, 0]) #THE GUIDE WIDTH SHOULD BE DIVIDED BY 2, NOT BY 4
+                waypoints31.append(ATC1.correctPose(tension_pose, route_arm, rotate = True, ATC_sign = -1, routing_app = True))
+                #Move with force_control
+                if force_control_active:
+                        rospy.wait_for_service('/right_norbdo/tare')
+                        tare_forces_srv = rospy.ServiceProxy('right_norbdo/tare', Trigger)
+                        tare_res = tare_forces_srv(TriggerRequest())
+                        tare_forces_srvL = rospy.ServiceProxy('left_norbdo/tare', Trigger)
+                        tare_res = tare_forces_srvL(TriggerRequest())
+                rospy.sleep(0.5) #REDUCE. Original 0.5
+                stop_mov_force = False #reset this value before activating the force_controlled
+                force_controlled = True
+                plan, success = compute_cartesian_path_velocity_control([waypoints31], [speed_tension], arm_side=route_arm)
+                if success:
+                        success = execute_force_control(arm_side = route_arm, plan = plan)
+                rospy.sleep(0.5) #REDUCE. Original 0.5
+                force_controlled = False
+                rospy.sleep(1.5) #REDUCE. Original 2.5
+
+        if step2==9:
                 #Bring second hand
                 waypoints4 = []
                 init_pose = arm2.get_current_pose().pose
@@ -4169,14 +4229,14 @@ def RC_insert_grasp_corner(op, route_arm):
                 if success:
                         execute_plan_async(group2, plan)
 
-        if step2==9:
+        if step2==10:
                 actuate_grippers(open_distance, gripper_speed, arm2_side, grasp=False)
 
                 waypoints42 = []
                 init_pose = arm2.get_current_pose().pose
                 waypoints42.append(init_pose)
                 waypoints42.append(ATC1.correctPose(grasp_pose_up, arm2_side, rotate = True, ATC_sign = -1))
-                next_guide_top_beginning_route_offset1.position.z += 0.012
+                #next_guide_top_beginning_route_offset1.position.z += 0.006
                 waypoints42.append(ATC1.correctPose(next_guide_top_beginning_route_offset1, arm2_side, rotate = True, ATC_sign = -1))
                 plan, success = compute_cartesian_path_velocity_control([waypoints42], [speed_execution], arm_side=arm2_side)
                 if success:
@@ -4184,10 +4244,10 @@ def RC_insert_grasp_corner(op, route_arm):
                         #arm2.execute(plan, wait=True)
                         #visualize_keypoints_simple([next_guide_top_beginning_route_offset2, grasp_pose_up])
 
-        if step2==10:
+        if step2==11:
                 #Apply tension movement. ToDo
                 actuate_grippers(slide_distance, gripper_speed, arm2_side, grasp=False)
-                actuate_grippers(grasp_distance, gripper_speed, route_arm, grasp=True)
+                #actuate_grippers(grasp_distance, gripper_speed, route_arm, grasp=True)
 
                 #Move arm down 
                 waypoints5 = []
@@ -4204,7 +4264,7 @@ def RC_insert_grasp_corner(op, route_arm):
                         execute_plan_async(route_group, plan)
                         #arm.execute(plan, wait=True)
 
-        if step2==11:
+        if step2==12:
                 actuate_grippers(grasp_distance, gripper_speed, arm2_side, grasp=True)
                 #Rotate arms
                 waypoints6_circ_wrist = []
@@ -4329,51 +4389,95 @@ def simplified_PC(op):
         global force_limit
         global force_cable
         global force_connector
+        global pick_grasp_offset
 
         #print("PC simplified")
         #print("STEP1: " +str(step1)+" STEP2: " +str(step2))
+        if op['spot']['name'] == "WH3":
+                y_deviation = 0.0074
+        else:
+                y_deviation = -0.003
         if step1 == 0:
+                #IMPLEMENT ALGORITHM TO FIND A FREE PATH TO MOVE
                 if step2 == 0:
-                        waypoints_PC = []
-                        trash_pose = arm.get_current_pose().pose
-                        init_pose = arm.get_current_pose().pose
-                        waypoints_PC.append(init_pose)
-                        mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, ((op["spot"]['gap']/2)-0.003), op["spot"]["height"] + 2*z_offset, 0, 0, 0])
-                        corrected_pose = ATC1.correctPose(mold_up_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = True, secondary_frame = True)
-                        waypoints_PC.append(corrected_pose)
-                        print("ROUTE ARM: " + str(route_arm))
-                        """
-                        pose_other_arm = arm2.get_current_pose().pose
-                        waypoints_PC_arm2 = [] #MAKE IT MOVE JUST IF NEEDED
-                        waypoints_PC_arm2.append(pose_other_arm)
-                        pose_other_arm.position.x += move_away2_sign*0.3
-                        waypoints_PC_arm2.append(pose_other_arm)
-                        if route_arm == "left":
-                                plan, success = dual_arm_cartesian_plan([waypoints_PC], [speed_execution], [waypoints_PC_arm2], [speed_execution], ATC1= ATC1, sync_policy=1)
-                        elif route_arm == "right":
-                                plan, success = dual_arm_cartesian_plan([waypoints_PC_arm2], [speed_execution], [waypoints_PC], [speed_execution], ATC1= ATC1, sync_policy=1)
-                        # plan, success = master_slave_plan(waypoints_PC, ATC1, 50.0, route_arm, type=1)
-                        if success:
-                                execute_plan_async("arms", plan)
-                                # arms.execute(plan, wait=True)
-                        """
-                        #visualize_keypoints_simple(waypoints_PC, parent_frame="/base_link")
-                        plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_PC], [fast_speed_execution], arm_side=route_arm)
-                        if success:
-                                execute_plan_async(motion_group_plan, plan)
-                                #rospy.sleep(5)
+                        if op['spot']['name'] == "WH3":
+                                waypoints_PC03 = []
+                                trash_pose = arm.get_current_pose().pose
+                                init_pose = arm.get_current_pose().pose
+                                free_path_pose1 = copy.deepcopy(init_pose)
+                                free_path_pose1.position.x -= 0.02
+                                free_path_pose2 = copy.deepcopy(free_path_pose1)
+                                free_path_pose2.position.y += 0.1895
+                                free_path_pose3 = copy.deepcopy(free_path_pose2)
+                                free_path_pose3.position.x += 0.212
+                                free_path_pose3.position.y += 0.03
+                                mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, ((op["spot"]['gap']/2)+y_deviation), op["spot"]["height"] + z_offset, 0, 0, 0])
+                                mold_up_forward_corrected = ATC1.correctPose(mold_up_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = True, secondary_frame = True)
+                                mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, ((op["spot"]['gap']/2)+y_deviation), op["spot"]["height"], 0, 0, 0])
+                                mold_up_forward_corrected_shifted = copy.deepcopy(mold_up_forward_corrected)
+                                mold_up_forward_corrected_shifted.position.y = free_path_pose3.position.y
+                                mold_up_forward_corrected_shifted.position.x -= 0.05
+                                waypoints_PC03 = [init_pose, free_path_pose1, free_path_pose2, free_path_pose3, mold_up_forward_corrected_shifted, mold_up_forward_corrected]
+                                plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_PC03], [fast_speed_execution], arm_side=route_arm)
+                                if success:
+                                        execute_plan_async(motion_group_plan, plan)
+                                        rospy.sleep(1)
+                        else:
+                                waypoints_PC01 = []
+                                trash_pose = arm.get_current_pose().pose
+                                init_pose = arm.get_current_pose().pose
+                                free_path_pose1 = copy.deepcopy(init_pose)
+                                free_path_pose1.position.x -= 0.25
+                                mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, ((op["spot"]['gap']/2)+y_deviation), op["spot"]["height"] + 2*z_offset, 0, 0, 0])
+                                mold_up_forward_corrected = ATC1.correctPose(mold_up_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = True, secondary_frame = True)
+                                waypoints_PC01 = [init_pose, free_path_pose1, mold_up_forward_corrected]
+                                plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_PC01], [fast_speed_execution], arm_side=route_arm)
+                                if success:
+                                        execute_plan_async(motion_group_plan, plan)
+                                        rospy.sleep(1)
+
+                # if step2 == 0:
+                #         waypoints_PC = []
+                #         trash_pose = arm.get_current_pose().pose
+                #         init_pose = arm.get_current_pose().pose
+                #         waypoints_PC.append(init_pose)
+                #         mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, ((op["spot"]['gap']/2)-0.003), op["spot"]["height"] + 2*z_offset, 0, 0, 0])
+                #         corrected_pose = ATC1.correctPose(mold_up_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = True, secondary_frame = True)
+                #         waypoints_PC.append(corrected_pose)
+                #         print("ROUTE ARM: " + str(route_arm))
+                #         """
+                #         pose_other_arm = arm2.get_current_pose().pose
+                #         waypoints_PC_arm2 = [] #MAKE IT MOVE JUST IF NEEDED
+                #         waypoints_PC_arm2.append(pose_other_arm)
+                #         pose_other_arm.position.x += move_away2_sign*0.3
+                #         waypoints_PC_arm2.append(pose_other_arm)
+                #         if route_arm == "left":
+                #                 plan, success = dual_arm_cartesian_plan([waypoints_PC], [speed_execution], [waypoints_PC_arm2], [speed_execution], ATC1= ATC1, sync_policy=1)
+                #         elif route_arm == "right":
+                #                 plan, success = dual_arm_cartesian_plan([waypoints_PC_arm2], [speed_execution], [waypoints_PC], [speed_execution], ATC1= ATC1, sync_policy=1)
+                #         # plan, success = master_slave_plan(waypoints_PC, ATC1, 50.0, route_arm, type=1)
+                #         if success:
+                #                 execute_plan_async("arms", plan)
+                #                 # arms.execute(plan, wait=True)
+                #         """
+                #         #visualize_keypoints_simple(waypoints_PC, parent_frame="/base_link")
+                #         plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_PC], [fast_speed_execution], arm_side=route_arm)
+                #         if success:
+                #                 execute_plan_async(motion_group_plan, plan)
+                #                 rospy.sleep(10)
                 
                 if step2 == 1:
                         waypoints_PC2 = []
                         init_pose_trash = arm.get_current_pose().pose
                         init_pose = arm.get_current_pose().pose
                         waypoints_PC2.append(init_pose)
-                        mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, ((op["spot"]['gap']/2)-0.003), 0, 0, 0, 0])
+                        mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2, ((op["spot"]['gap']/2)+y_deviation), -0.007, 0, 0, 0])
                         waypoints_PC2.append(ATC1.correctPose(mold_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = True, secondary_frame = True))
                         plan, success = compute_cartesian_path_velocity_control([waypoints_PC2], [slow_speed_execution], arm_side=route_arm)
                         if success:
                                 execute_plan_async(route_group, plan)
                                 # arm.execute(plan, wait=True)
+                        rospy.sleep(1)
 
                 if step2 == 2:
                         waypoints_PC3 = []
@@ -4383,13 +4487,15 @@ def simplified_PC(op):
                         combs_width = 0.001
                         mold_width = 0.001
                         extra_pull = 0.003
-                        pull_pose = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2+pick_grasp_offset+combs_width-mold_width+extra_pull, ((op["spot"]['gap']/2)-0.003), 0, 0, 0, 0])
+                        pull_pose = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']+grasp_offset+EEF_route[0]/2+pick_grasp_offset[op["spot"]["name"]]+combs_width-mold_width+extra_pull, ((op["spot"]['gap']/2)+y_deviation), -0.007, 0, 0, 0])
                         waypoints_PC3.append(ATC1.correctPose(pull_pose, route_arm, rotate = True, ATC_sign = -1, routing_app = True, secondary_frame = True))
                         force_limit = copy.deepcopy(force_connector)
                         if force_control_active:
                                 rospy.wait_for_service('/right_norbdo/tare')
                                 tare_forces_srv = rospy.ServiceProxy('right_norbdo/tare', Trigger)
                                 tare_res = tare_forces_srv(TriggerRequest())
+                                tare_forces_srvL = rospy.ServiceProxy('left_norbdo/tare', Trigger)
+                                tare_res = tare_forces_srvL(TriggerRequest())
                         force_controlled = True
                         plan, success = compute_cartesian_path_velocity_control([waypoints_PC3], [speed_tension], arm_side=route_arm)
                         if success:
@@ -4426,7 +4532,10 @@ def EC(op):
         arm = motion_groups['arm_'+pick_arm]
 
         prepick_pose = 'arm_'+pick_arm+'_prepick'
-        pick_pose = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']/2, - fingers_size[0]/2 - pick_grasp_offset - grasp_offset, op["spot"]["height"]/2, 0, 0, 0])
+        if op["spot"]["name"] == "WH3":
+                pick_pose = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']/2, - fingers_size[0]/2 - pick_grasp_offset[op["spot"]["name"]] - grasp_offset, op["spot"]["height"]/2 + 0.01, 0, 0, 0])
+        else:
+                pick_pose = get_shifted_pose(op["spot"]["pose_corner"], [op["spot"]['width']/2, - fingers_size[0]/2 - pick_grasp_offset[op["spot"]["name"]] - grasp_offset, op["spot"]["height"]/2, 0, 0, 0])
         pick_pose = get_shifted_pose(pick_pose, [0, 0, 0, 0, 0, -1.5708])
         pick_pose_offset = get_shifted_pose(pick_pose, [0, 0, op["spot"]["height"]/2 + z_offset_pick, 0, 0, 0])
         #visualize_keypoints_simple([pick_pose, pick_pose_offset, ATC1.correctPose(pick_pose, pick_arm, rotate = True, ATC_sign = -1, picking_app = True)], parent_frame="/base_link")
@@ -4534,6 +4643,7 @@ def separate_cables(op, route_arm):
         global stop_mov
         global stop_mov_force
         global force_controlled
+        global holding_cables
 
         rospy.wait_for_service('/vision/grasp_point_determination_srv')
         grasp_point_srv = rospy.ServiceProxy('/vision/grasp_point_determination_srv', cablesSeparation)
@@ -4571,7 +4681,7 @@ def separate_cables(op, route_arm):
                 if step2 == 1:
                         os.system('cp ' + str(rospack.get_path('vision_pkg_full_demo')) + '/imgs/error_grasp_1.jpg /home/remodel/UI-REMODEL/src/assets/img/grasp_image.jpg')
                         repeat = True
-                        pixel_D_param = 4
+                        pixel_D_param = 5
                         forward_param = False
                         while repeat:
                                 if use_camera:
@@ -4624,11 +4734,20 @@ def separate_cables(op, route_arm):
                         if grasp_point_res.success:
                                 actuate_grippers(open_distance, gripper_speed, separation_arm, grasp=False)
                                 print(grasp_point_global)
+                                init_pose = arm_sep.get_current_pose().pose
+
+                                # test_point = get_shifted_pose(op["spot"][0]["pose_corner"], [0.03, op["spot"][0]['gap']/2, op["spot"][0]["height"], 0, 0, 0])
+                                # test_point_corrected = ATC1.correctPose(test_point, separation_arm, rotate = True, routing_app = False, ATC_sign = -1, secondary_frame = True)
+                                # waypoints_test = [init_pose, test_point_corrected]
+                                # plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_test], [speed_execution], arm_side=separation_arm)
+                                # if success:
+                                #         execute_plan_async(motion_group_plan, plan)
+                                # exit()
+
                                 grasp_point = get_shifted_pose(op["spot"][0]["pose_corner"], [grasp_point_global[0], op["spot"][0]['gap']/2, op["spot"][0]["height"] + grasp_point_global[1], 0, 0, 0])
                                 grasp_point_offset = get_shifted_pose(grasp_point, [0, 0, z_offset - grasp_point_global[1], 0, 0, 0])
                                 grasp_point_corrected = ATC1.correctPose(grasp_point, separation_arm, rotate = True, routing_app = False, ATC_sign = -1, secondary_frame = True)
                                 grasp_point_offset_corrected = ATC1.correctPose(grasp_point_offset, separation_arm, rotate = True, routing_app = False, ATC_sign = -1, secondary_frame = True)                        
-                                init_pose = arm_sep.get_current_pose().pose
                                 waypoints2 = [init_pose, grasp_point_offset_corrected, grasp_point_corrected]
                                 print("INIT: " + str(init_pose))
                                 print("GRASP: " + str(grasp_point_corrected))
@@ -4702,7 +4821,7 @@ def separate_cables(op, route_arm):
                         waypoints_SC4 = []
                         init_pose = arm_sep.get_current_pose().pose
                         waypoints_SC4.append(init_pose)
-                        sep_guide_forward_up = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"] + fingers_size[0]/2, op["spot"][1]["gap"]/2, op["spot"][1]["height"] + z_offset + fingers_size[2]/2, 0, 0, 0])
+                        sep_guide_forward_up = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"] + fingers_size[0], op["spot"][1]["gap"]/2, op["spot"][1]["height"] + z_offset + fingers_size[2]/2, 0, 0, 0])
                         waypoints_SC4.append(ATC1.correctPose(sep_guide_forward_up, separation_arm, rotate = True, routing_app = False, ATC_sign = -1))
                         #plan, success = compute_cartesian_path_velocity_control([waypoints_SC4], [speed_execution], arm_side=separation_arm)
                         #if success:
@@ -4718,13 +4837,15 @@ def separate_cables(op, route_arm):
                         waypoints_SC5 = []
                         init_pose = arm_sep.get_current_pose().pose
                         waypoints_SC5.append(init_pose)
-                        sep_guide_tension = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"]  + fingers_size[0]/2 + force_offset, op["spot"][1]["gap"]/2, op["spot"][1]["height"] + z_offset + fingers_size[2]/2, 0, 0, 0])
+                        sep_guide_tension = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"]  + fingers_size[0] + force_offset, op["spot"][1]["gap"]/2, op["spot"][1]["height"] + z_offset + fingers_size[2]/2, 0, 0, 0])
                         waypoints_SC5.append(ATC1.correctPose(sep_guide_tension, separation_arm, rotate = True, routing_app = False, ATC_sign = -1))
                         #Move with force_control
                         if force_control_active:
                                 rospy.wait_for_service('/right_norbdo/tare')
                                 tare_forces_srv = rospy.ServiceProxy('right_norbdo/tare', Trigger)
                                 tare_res = tare_forces_srv(TriggerRequest())
+                                tare_forces_srvL = rospy.ServiceProxy('left_norbdo/tare', Trigger)
+                                tare_res = tare_forces_srvL(TriggerRequest())
                         rospy.sleep(0.5) #REDUCE. Original 0.5
                         stop_mov_force = False #reset this value before activating the force_controlled
                         force_controlled = True
@@ -4776,7 +4897,51 @@ def separate_cables(op, route_arm):
                         print("###########TEST CIRC END###########")
 
                 if step2 == 7:
-                        retract_arm(separation_arm, op["spot"][1])
+                        actuate_grippers(slide_distance, gripper_speed, separation_arm, grasp=False)
+                        waypoints_SC7 = []
+                        init_pose = arm_sep.get_current_pose().pose
+                        waypoints_SC7.append(init_pose)
+                        if separation_arm=="right":
+                                sign_side = 1
+                        else:
+                                sign_side = -1
+                        side_pose = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"] + fingers_size[0] + x_offset, sign_side*0.1, 0, 0, 0, 0])
+                        waypoints_SC7.append(ATC1.correctPose(side_pose, separation_arm, rotate = True, routing_app = False, ATC_sign = -1))
+                        plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_SC7], [slow_speed_execution], arm_side=separation_arm)
+                        if success:
+                                execute_plan_async(motion_group_plan, plan)
+
+                if step2 == 8:
+                        actuate_grippers(grasp_distance, gripper_speed, separation_arm, grasp=True)
+                        waypoints_SC8 = []
+                        init_pose = arm_sep.get_current_pose().pose
+                        waypoints_SC8.append(init_pose)
+                        if separation_arm=="right":
+                                sign_side = 1
+                        else:
+                                sign_side = -1
+                        side_pose_tension = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"] + fingers_size[0] + x_offset, sign_side*(0.1 + force_offset/2), 0, 0, 0, 0])
+                        waypoints_SC8.append(ATC1.correctPose(side_pose_tension, separation_arm, rotate = True, routing_app = False, ATC_sign = -1))
+                        #Move with force_control
+                        if force_control_active:
+                                rospy.wait_for_service('/right_norbdo/tare')
+                                tare_forces_srv = rospy.ServiceProxy('right_norbdo/tare', Trigger)
+                                tare_res = tare_forces_srv(TriggerRequest())
+                                tare_forces_srvL = rospy.ServiceProxy('left_norbdo/tare', Trigger)
+                                tare_res = tare_forces_srvL(TriggerRequest())
+                        rospy.sleep(0.5) #REDUCE. Original 0.5
+                        stop_mov_force = False #reset this value before activating the force_controlled
+                        force_controlled = True
+                        plan, success = compute_cartesian_path_velocity_control([waypoints_SC8], [speed_tension], arm_side=separation_arm)
+                        if success:
+                                success = execute_force_control(arm_side = separation_arm, plan = plan)
+                        rospy.sleep(0.5) #REDUCE. Original 0.5
+                        force_controlled = False
+                        rospy.sleep(2.5) #REDUCE. Original 2.5
+                        holding_cables = True
+
+                if step2 == 9:
+                        #retract_arm(separation_arm, op["spot"][1])
                         step1 += 1
                         step2 = 0
                         process_actionserver.publish_feedback()
@@ -4793,6 +4958,7 @@ def grasp_cables(op, route_arm, separated = False):
         global open_distance
         global slide_distance
         global gripper_speed
+        global holding_cables
 
         print("Grasp cables")
         print("Step1: "+str(step1))
@@ -4811,9 +4977,14 @@ def grasp_cables(op, route_arm, separated = False):
         arm = motion_groups[route_group]
         trash_pose = arm.get_current_pose().pose
 
-        mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, op["spot"]['gap']/2, op["spot"]["height"] + 2*z_offset, 0, 0, 0])
+        if separated:
+                mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, (op["spot"]['gap']/2)+0.005, op["spot"]["height"] + 2*z_offset, 0, 0, 0])
+                mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, (op["spot"]['gap']/2)+0.005, 0, 0, 0, 0])
+        else:
+                mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, op["spot"]['gap']/2, op["spot"]["height"] + 2*z_offset, 0, 0, 0])
+                mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, op["spot"]['gap']/2, 0, 0, 0, 0])
         mold_up_forward_corrected = ATC1.correctPose(mold_up_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = routing_app, secondary_frame = True)
-        mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, op["spot"]['gap']/2, 0, 0, 0, 0])
+        
         if separated:
                 mold_forward_corrected = ATC1.correctPose(mold_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = routing_app, secondary_frame = True)
         else:
@@ -4832,7 +5003,12 @@ def grasp_cables(op, route_arm, separated = False):
                         if separated:
                                 plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_GC1], [speed_execution], arm_side=route_arm)
                         else:
-                                plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_GC1], [fast_speed_execution], arm_side=route_arm)
+                                if holding_cables:
+                                        plan, success = compute_cartesian_path_velocity_control([waypoints_GC1], [fast_speed_execution], arm_side=route_arm)
+                                        motion_group_plan = route_group
+                                        holding_cables = False
+                                else:
+                                        plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_GC1], [fast_speed_execution], arm_side=route_arm)
                         if success:
                                 execute_plan_async(motion_group_plan, plan)
                 
@@ -4854,7 +5030,12 @@ def grasp_cables(op, route_arm, separated = False):
                                 retract_z_corrected = ATC1.correctPose(retract_z, route_arm, rotate = True, routing_app = routing_app, ATC_sign = -1, secondary_frame=True)
                                 new_pose = copy.deepcopy(init_pose)
                                 new_pose.position.z = retract_z_corrected.position.z
-                                waypoints_GC3 = [init_pose, new_pose]
+                                if route_arm=="right":
+                                        sign_side = 1
+                                else:
+                                        sign_side = -1
+                                side_pose = get_shifted_pose(new_pose, [0, sign_side*0.05, 0, 0, 0, 0])
+                                waypoints_GC3 = [init_pose, new_pose, side_pose]
                                 plan, success = compute_cartesian_path_velocity_control([waypoints_GC3], [speed_execution], arm_side=route_arm)
                                 if success:
                                         execute_plan_async(route_group, plan)
@@ -5291,9 +5472,9 @@ if __name__ == '__main__':
         gripper_right_ATC_pose = frame_to_pose(gripper_right_ATC_frame)
 
         gripper_end_frame_L = PyKDL.Frame() 
-        gripper_end_frame_L.p = PyKDL.Vector(0.094, 0, 0.2527)#(0.0998, 0, 0.2356) #Center pad with ATC Z+0.068-0,013
+        gripper_end_frame_L.p = PyKDL.Vector(0.094, 0, 0.2617)#(0.0998, 0, 0.2356) #Center pad with ATC Z+0.068-0,013 (z= 252.7 + 0.009)
         gripper_end_frame_L2 = PyKDL.Frame()
-        gripper_end_frame_L2.p = PyKDL.Vector(0.094, 0, 0.266)#(0.0998, 0, 0.25) #Nail with ATC Z+0.068-0,013
+        gripper_end_frame_L2.p = PyKDL.Vector(0.094, 0, 0.275)#(0.0998, 0, 0.25) #Nail with ATC Z+0.068-0,013 (z+ 0.009)
         # gripper_end_frame_L = PyKDL.Frame() 
         # gripper_end_frame_L.p = PyKDL.Vector(0.094, 0, 0.1977)
         # gripper_end_frame_L2 = PyKDL.Frame()
@@ -5369,7 +5550,7 @@ if __name__ == '__main__':
                         guideReq.guide = ops.spot[0].id
                         guideResult = my_service(guideReq)
                         guide = guideResult.data
-                        ops_temp['spot'] = {'jig': ops.spot[0].jig, 'id': ops.spot[0].id, 'side': ops.spot[0].side, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'dimensions': guide.dimensions}
+                        ops_temp['spot'] = {'name': str(ops.label[0]), 'jig': ops.spot[0].jig, 'id': ops.spot[0].id, 'side': ops.spot[0].side, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'dimensions': guide.dimensions}
                         ops_info_text_temp = 'Pick ' + str(ops.label[0]) + " from " + str(ops.spot[0].jig)
 
                 elif ops.type == "PC":
@@ -5380,7 +5561,7 @@ if __name__ == '__main__':
                         guideReq.guide = ops.spot[0].id
                         guideResult = my_service(guideReq)
                         guide = guideResult.data
-                        ops_temp['spot'] = {'jig': ops.spot[0].jig, 'id': ops.spot[0].id, 'side': ops.spot[0].side, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions}
+                        ops_temp['spot'] = {'name': str(ops.label[0]), 'jig': ops.spot[0].jig, 'id': ops.spot[0].id, 'side': ops.spot[0].side, 'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions}
                         last_PC_spot = copy.deepcopy(ops_temp['spot'])
                         ops_info_text_temp = 'Place connector ' + str(ops.label[0]) + " in " + str(ops.spot[0].jig)
 
@@ -5402,7 +5583,7 @@ if __name__ == '__main__':
                         ops_info_text_temp = 'Route cables of ' + str(ops.label[0]) + " along " + str(spot_text_temp[:-1])
                                 
                         ###Label
-                        ops_temp['label'] = ops.label
+                        ops_temp['label'] = ops.label[0]
                         rospy.wait_for_service('ELVEZ_platform_handler/connector_info')
                         my_service_con = rospy.ServiceProxy('ELVEZ_platform_handler/connector_info', connector_info)
                         rospy.wait_for_service('ELVEZ_platform_handler/cable_info')
@@ -5506,7 +5687,7 @@ if __name__ == '__main__':
                 ops_info.append(ops_temp)
                 ops_info_text.append(ops_info_text_temp)
 
-        actuate_grippers(open_distance, gripper_speed, 'both', grasp=False)
+        #actuate_grippers(open_distance, gripper_speed, 'both', grasp=False)
 
         #print(ops_info)
 
