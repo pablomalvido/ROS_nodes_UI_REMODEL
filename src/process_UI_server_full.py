@@ -127,6 +127,8 @@ gripper_left_distance = 0
 holding_cables = False
 holding_comeback_pose_corrected = Pose()
 grasping_cables = False
+separated_global = False #True when a cable group has been separated for routing
+separation_arm = ""
 
 #Read config params
 config_full_pkg_path = str(rospack.get_path('UI_nodes_pkg'))
@@ -220,6 +222,7 @@ try:
         #pick_grasp_offset = float(config['offset_pick_grasp'])/1000 #0.015
         pick_grasp_offset = {}
         pick_grasp_offset['WH1'] = 0.015
+        pick_grasp_offset['WH2'] = 0.015
         pick_grasp_offset['WH3'] = 0.0255
         z_offset_pick = float(config['offset_pick_z'])/1000 #0.05
         z_offset_photo = float(config['offset_photo_z'])/1000 #0.1
@@ -232,8 +235,10 @@ try:
         force_cable = {}
         force_connector = {}
         force_cable['WH1'] = float(config['cable_tension_wh1']) #3.5N
+        force_cable['WH2'] = float(config['cable_tension_wh1']) #3.5N
         force_cable['WH3'] = float(config['cable_tension_wh3']) #3.5N
         force_connector['WH1'] = float(config['connector_tension_wh1']) #5N
+        force_connector['WH2'] = float(config['connector_tension_wh1']) #5N
         force_connector['WH3'] = float(config['connector_tension_wh3']) #5N
 
         #Gripper parameters
@@ -1241,6 +1246,13 @@ class ATC(object):
 
         return cell_guide_pose
 
+
+def pose_to_stampedpose(pose):
+        pose_result = PoseStamped()
+        pose_result.pose = pose
+        header = arm_left.get_current_pose().header
+        pose_result.header = header
+        return pose_result
 
 def frame_to_pose(frame):
         """
@@ -3363,6 +3375,9 @@ def route_cables(op, connector_op, route_arm="left"):
                         if abs(next_guide_dir - cable_dir_angle) < max_angle_diff:
                                 routing_operations.append({'op':"first_lift", 'next_guide': corrected_guides["spot"][0], 'prev_guide': connector_op["spot"]})
                         else:
+                                print("#####ANGLES#######")
+                                print(cable_dir_angle)
+                                print(next_guide_dir)
                                 routing_operations.append({'op':"first_corner", 'next_guide': corrected_guides["spot"][0], 'prev_guide': connector_op["spot"]})
                         index += 1
                         continue
@@ -3400,6 +3415,10 @@ def route_cables(op, connector_op, route_arm="left"):
                         routing_operations.append({'op':"insert_corner", 'next_guide': corrected_guides["spot"][index], 'prev_guide': corrected_guides["spot"][index-1]})
                 else:
                         #A1==A2!=AL or A1==AL!=A2 or A1!=A2!=AL, Needs insert and corner
+                        print("#####ANGLES#######")
+                        print(prev_guide_dir)
+                        print(cable_dir_angle)
+                        print(next_guide_dir)
                         routing_operations.append({'op':"insert_grasp_corner", 'next_guide': corrected_guides["spot"][index], 'prev_guide': corrected_guides["spot"][index-1]})
                 index += 1
 
@@ -3604,10 +3623,28 @@ def RC_push_inserted(push_arm):
         global routed_guides
         global holding_cables
         global holding_comeback_pose_corrected
+
+        rospy.wait_for_service('compute_ik')
+        ik_srv = rospy.ServiceProxy('compute_ik', GetPositionIK)
+
         routed_guides_copy = copy.deepcopy(routed_guides)
         for guide in routed_guides_copy:
                 top_guide_beginning_backward = get_shifted_pose(guide["pose_corner"],[-(guide['width']/2 + EEF_route[0]/2 + grasp_offset), guide['gap']/2, guide['height'] + z_offset + EEF_route[2], 0, 0, 0])
                 bottom_guide_beginning_backward = get_shifted_pose(guide["pose_corner"],[-(guide['width']/2 + EEF_route[0]/2 + grasp_offset), guide['gap']/2, guide['height']/4, 0, 0, 0])
+                ik_rq = PositionIKRequest()
+                ik_rq.robot_state = RobotState()
+                ik_rq.group_name = group2
+                pose_ik = ATC1.correctPose(top_guide_beginning_backward, push_arm, rotate = True, ATC_sign = -1, routing_app = True, route_arm = False)
+                ik_rq.pose_stamped = pose_to_stampedpose(pose_ik)
+                ik_rq.constraints = Constraints()
+                ik_rq.constraints.name = ''
+                print("calculating IK")
+                ik_res = ik_srv(ik_rq)
+                if ik_res.error_code.val!=1:
+                        print("IK ERROR")
+                        print(ik_res.error_code)
+                        routed_guides = []
+                        break
                 
                 if step2==3:
                         if holding_cables:
@@ -3774,7 +3811,19 @@ def RC_first_corner(op, route_arm):
                 waypoints4 = []
                 init_pose = arm2.get_current_pose().pose
                 waypoints4.append(init_pose)
+
+                init_pose_guides = ATC1.antiCorrectPose(init_pose, route_arm, routing_app = True)
+                # init_pose_guides_forward = get_shifted_pose(init_pose_guides, [0.5, 0, 0, 0, 0, 0])
+                # m1 = (init_pose_guides.position.y - init_pose_guides_forward.position.y)/(init_pose_guides.position.x - init_pose_guides_forward.position.x)
+                # n1 = init_pose_guides.position.y - m1*init_pose_guides.position.x
                 grasp_pose_up = get_shifted_pose(next_guide_top_beginning_route_offset1, [0, 0, z_offset+ EEF_route2[2], 0, 0, 0])
+                # grasp_pose_up_forward = get_shifted_pose(grasp_pose_up, [0.5, 0, 0, 0, 0, 0])
+                # m2 = (grasp_pose_up.position.y - grasp_pose_up_forward.position.y)/(grasp_pose_up.position.x - grasp_pose_up_forward.position.x)
+                # n2 = grasp_pose_up.position.y - m2*grasp_pose_up.position.x
+                # if m1 != m2: #Otherwise the movement is linear
+                #         center_x = ((n2-n1)/(m1-m2))
+                #         center_y = m1*center_x + n1
+
                 grasp_pose_up_corrected = ATC1.correctPose(grasp_pose_up, arm2_side, rotate = True, ATC_sign = -1, routing_app = True, route_arm = False)
                 init_pose_up = copy.deepcopy(init_pose)
                 init_pose_up.position.z = grasp_pose_up_corrected.position.z
@@ -4689,7 +4738,7 @@ def retract_arm(ret_arm, guide, special = False):
                 execute_plan_async(ret_group, plan)
 
 
-def separate_cables(op, route_arm):
+def separate_cables_slide(op, route_arm):
         global z_offset_photo
         global z_offset
         global x_offset
@@ -5042,7 +5091,7 @@ def separate_cables(op, route_arm):
                         process_actionserver.publish_feedback()
 
 
-def separate_cables_old(op, route_arm):
+def separate_cables(op, route_arm):
         global z_offset_photo
         global z_offset
         global x_offset
@@ -5062,21 +5111,54 @@ def separate_cables_old(op, route_arm):
         global force_limit_cable
         global force_limit
         global holding_comeback_pose_corrected
+        global separated_global
+        global separation_arm
 
         force_limit = copy.deepcopy(force_limit_cable)
-
+        print("CABLE SEPARATION")
+        if not op["sep_guide"]:
+                separated_global = True #When the separated cable group will be routed next. Do not apply when the separated group is gonna be placed in a separation guide
+        
+        #Check gripper orientation
+        rotate_gripper_z = False
+        switch_arms = False
+        next_guide_fw = get_shifted_pose(op["spot"][1]["pose_corner"], [0.01, 0, 0, 0, 0, 0])
+        con_guide_fw = get_shifted_pose(op["spot"][0]["pose_corner"], [0.01, 0, 0, 0, 0, 0])
+        if compute_distance_xy(op["spot"][0]["pose_corner"], next_guide_fw) < compute_distance_xy(op["spot"][0]["pose_corner"], op["spot"][1]["pose_corner"]): #Direction of routing is not forward
+                print("BACKWARD INITIALLY")
+                next_guide_corner = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"], op["spot"][1]["gap"], 0, 0, 0, math.pi])  
+        else:
+                print("FORWARD INITIALLY")
+                next_guide_corner = copy.deepcopy(op["spot"][1]["pose_corner"])      
+        next_guide_fw = get_shifted_pose(next_guide_corner, [1, 0, 0, 0, 0, 0])
+        angle_next_guide = math.atan2(next_guide_fw.position.y - next_guide_corner.position.y, next_guide_fw.position.x - next_guide_corner.position.x)*180/math.pi
+        angle_con_guide = math.atan2(con_guide_fw.position.y - op["spot"][0]["pose_corner"].position.y, con_guide_fw.position.x - op["spot"][0]["pose_corner"].position.x)*180/math.pi
+        print(angle_next_guide)
+        print(angle_con_guide)
+        if ((abs(angle_next_guide) > 100) or (abs(angle_con_guide) > 100)):
+                if op["sep_guide"]:
+                        print("ROTATE GRIPPER")
+                        rotate_gripper_z = True #Rotates the gripper 180deg
+                else:
+                        switch_arms = True #Separate cables with arm 2
+        else:
+                print("DON'T ROTATE GRIPPER")
+        
         rospy.wait_for_service('/vision/grasp_point_determination_srv')
         grasp_point_srv = rospy.ServiceProxy('/vision/grasp_point_determination_srv', cablesSeparation)
         rospy.wait_for_service('/vision/check_cable_separation_srv')
         eval_grasp_srv = rospy.ServiceProxy('/vision/check_cable_separation_srv', cablesSeparation)
         
         if route_arm == "right":
-                fingers_size = ATC1.EEF_dict[ATC1.EEF_right].fingers_dim
+                fingers_size = ATC1.EEF_dict[ATC1.EEF_right].fingers_dim             
+        else:
+                fingers_size = ATC1.EEF_dict[ATC1.EEF_left].fingers_dim
+
+        if (route_arm == "right" and not switch_arms) or (route_arm == "left" and switch_arms):
                 separation_arm = "left"
                 fingers_size_sep = ATC1.EEF_dict[ATC1.EEF_left].fingers_dim
                 separation_group = 'arm_left'
         else:
-                fingers_size = ATC1.EEF_dict[ATC1.EEF_left].fingers_dim
                 separation_arm = "right"
                 fingers_size_sep = ATC1.EEF_dict[ATC1.EEF_right].fingers_dim
                 separation_group = 'arm_right'
@@ -5106,13 +5188,15 @@ def separate_cables_old(op, route_arm):
                         while repeat:
                                 if use_camera:
                                         rospy.wait_for_service('/OAK/capture_img')
-                                        capture_img_srv = rospy.ServiceProxy('/OAK/capture_img', Trigger)
-                                        capture_img_res = capture_img_srv(TriggerRequest())
+                                        capture_img_srv = rospy.ServiceProxy('/OAK/capture_img', cameraCapture)
+                                        capture_img_req = cameraCapture()
+                                        capture_img_req.cam_id = int(op['WH'])
+                                        capture_img_res = capture_img_srv(capture_img_req)
                                         img_cables_path = capture_img_res.message
                                         if not capture_img_res.success:
                                                 stop_function("Failed to take the cables image")
                                 else:
-                                        img_cables_path = str(rospack.get_path('vision_pkg_full_demo')) + '/imgs/Image_cables_44.jpg'
+                                        img_cables_path = str(rospack.get_path('vision_pkg_full_demo')) + '/imgs/test_image_GP_WH'+op['WH']+'_1.jpg'
 
                                 msg_log = String()
                                 msg_log.data = "Calculating grasp point..."
@@ -5166,8 +5250,8 @@ def separate_cables_old(op, route_arm):
 
                                 grasp_point = get_shifted_pose(op["spot"][0]["pose_corner"], [grasp_point_global[0], op["spot"][0]['gap']/2, op["spot"][0]["height"] + grasp_point_global[1], 0, 0, 0])
                                 grasp_point_offset = get_shifted_pose(grasp_point, [0, 0, z_offset - grasp_point_global[1], 0, 0, 0])
-                                grasp_point_corrected = ATC1.correctPose(grasp_point, separation_arm, rotate = True, routing_app = False, ATC_sign = -1, secondary_frame = True)
-                                grasp_point_offset_corrected = ATC1.correctPose(grasp_point_offset, separation_arm, rotate = True, routing_app = False, ATC_sign = -1, secondary_frame = True)                        
+                                grasp_point_corrected = ATC1.correctPose(grasp_point, separation_arm, rotate = True, routing_app = not rotate_gripper_z, ATC_sign = -1, secondary_frame = True)
+                                grasp_point_offset_corrected = ATC1.correctPose(grasp_point_offset, separation_arm, rotate = True, routing_app = not rotate_gripper_z, ATC_sign = -1, secondary_frame = True)                        
                                 waypoints2 = [init_pose, grasp_point_offset_corrected, grasp_point_corrected]
                                 print("INIT: " + str(init_pose))
                                 print("GRASP: " + str(grasp_point_corrected))
@@ -5185,7 +5269,7 @@ def separate_cables_old(op, route_arm):
                         rospy.sleep(1)
                         init_pose = arm_sep.get_current_pose().pose
                         grasp_point_lift = get_shifted_pose(grasp_point_offset, [x_offset, 0, z_offset/2, 0, 0, 0])
-                        grasp_point_lift_corrected = ATC1.correctPose(grasp_point_lift, separation_arm, rotate = True, routing_app = False, ATC_sign = -1, secondary_frame = True)
+                        grasp_point_lift_corrected = ATC1.correctPose(grasp_point_lift, separation_arm, rotate = True, routing_app = not rotate_gripper_z, ATC_sign = -1, secondary_frame = True)
                         waypoints3 = [init_pose, grasp_point_lift_corrected]
                         plan, success = compute_cartesian_path_velocity_control([waypoints3], [speed_execution], arm_side=separation_arm)
                         if success:
@@ -5195,13 +5279,15 @@ def separate_cables_old(op, route_arm):
                 if step2 == 3:
                         if use_camera:
                                 rospy.wait_for_service('/OAK/capture_img')
-                                capture_img_srv = rospy.ServiceProxy('/OAK/capture_img', Trigger)
-                                capture_img_res = capture_img_srv(TriggerRequest())
+                                capture_img_srv = rospy.ServiceProxy('/OAK/capture_img', cameraCapture)
+                                capture_img_req = cameraCapture()
+                                capture_img_req.cam_id = int(op['WH'])
+                                capture_img_res = capture_img_srv(capture_img_req)
                                 img_cables_path = capture_img_res.message
                                 if not capture_img_res.success:
                                         stop_function("Failed to take the cables image")
                         else:
-                                img_cables_path = str(rospack.get_path('vision_pkg_full_demo')) + '/imgs/Image_cables_1.jpg'
+                                img_cables_path = str(rospack.get_path('vision_pkg_full_demo')) + '/imgs/test_image_EG_WH'+op['WH']+'_1.jpg'
 
                         msg_log = String()
                         msg_log.data = "Evaluating cable separation..."
@@ -5237,12 +5323,12 @@ def separate_cables_old(op, route_arm):
                                         print("Grasp evaluation failed")
                         step2 = 4
 
-                if step2 == 4:
+                if step2 == 4 and op["sep_guide"]:
                         waypoints_SC4 = []
                         init_pose = arm_sep.get_current_pose().pose
                         waypoints_SC4.append(init_pose)
-                        sep_guide_forward_up = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"] + fingers_size[0], op["spot"][1]["gap"]/2, op["spot"][1]["height"] + z_offset + fingers_size[2]/2, 0, 0, 0])
-                        waypoints_SC4.append(ATC1.correctPose(sep_guide_forward_up, separation_arm, rotate = True, routing_app = False, ATC_sign = -1))
+                        sep_guide_forward_up = get_shifted_pose(next_guide_corner, [op["spot"][1]["width"] + fingers_size[0], op["spot"][1]["gap"]/2, op["spot"][1]["height"] + z_offset + fingers_size[2]/2, 0, 0, 0])
+                        waypoints_SC4.append(ATC1.correctPose(sep_guide_forward_up, separation_arm, rotate = True, routing_app = not rotate_gripper_z, ATC_sign = -1))
                         #plan, success = compute_cartesian_path_velocity_control([waypoints_SC4], [speed_execution], arm_side=separation_arm)
                         #if success:
                         #        execute_plan_async(separation_group, plan)
@@ -5250,15 +5336,15 @@ def separate_cables_old(op, route_arm):
                         if success:
                                 execute_plan_async(motion_group_plan, plan)
 
-                if step2 == 5:
+                if step2 == 5 and op["sep_guide"]:
                         #Apply tension
                         actuate_grippers(grasp_distance, gripper_speed, separation_arm, grasp=True)
 
                         waypoints_SC5 = []
                         init_pose = arm_sep.get_current_pose().pose
                         waypoints_SC5.append(init_pose)
-                        sep_guide_tension = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"]  + fingers_size[0] + force_offset, op["spot"][1]["gap"]/2, op["spot"][1]["height"] + z_offset + fingers_size[2]/2, 0, 0, 0])
-                        waypoints_SC5.append(ATC1.correctPose(sep_guide_tension, separation_arm, rotate = True, routing_app = False, ATC_sign = -1))
+                        sep_guide_tension = get_shifted_pose(next_guide_corner, [op["spot"][1]["width"]  + fingers_size[0] + force_offset, op["spot"][1]["gap"]/2, op["spot"][1]["height"] + z_offset + fingers_size[2]/2, 0, 0, 0])
+                        waypoints_SC5.append(ATC1.correctPose(sep_guide_tension, separation_arm, rotate = True, routing_app = not rotate_gripper_z, ATC_sign = -1))
                         #Move with force_control
                         if force_control_active:
                                 rospy.wait_for_service('/right_norbdo/tare')
@@ -5276,16 +5362,16 @@ def separate_cables_old(op, route_arm):
                         force_controlled = False
                         rospy.sleep(2.5) #REDUCE. Original 2.5
 
-                if step2 == 6:
+                if step2 == 6 and op["sep_guide"]:
                         print("###########TEST CIRC###########")
                         #Circ motion
                         waypoints_SC6 = []
                         trash_pose = arm_sep.get_current_pose().pose
                         init_pose = arm_sep.get_current_pose().pose
                         waypoints_SC6.append(copy.deepcopy(init_pose))
-                        init_pose_guides = ATC1.antiCorrectPose(init_pose, separation_arm, routing_app = False)
+                        init_pose_guides = ATC1.antiCorrectPose(init_pose, separation_arm, routing_app = not rotate_gripper_z)
                         rot_center = get_shifted_pose(op["spot"][0]["pose_corner"],[op["spot"][0]['width']/2, op["spot"][0]['gap']/2, op["spot"][0]['height']/2, 0, 0, 0])
-                        insert_guide_center_sep = get_shifted_pose(op["spot"][1]["pose_corner"],[op["spot"][1]['width']/2, op["spot"][1]['gap']/2, op["spot"][1]['height']/2, 0, 0, 0])
+                        insert_guide_center_sep = get_shifted_pose(next_guide_corner,[op["spot"][1]['width']/2, op["spot"][1]['gap']/2, op["spot"][1]['height']/2, 0, 0, 0])
                         radius_rot = compute_distance(rot_center, init_pose_guides)
                         #final_point = in the direction rot_center --> guide a distance of radius_rot
                         final_cable_direction = get_axis(insert_guide_center_sep, rot_center)
@@ -5309,14 +5395,14 @@ def separate_cables_old(op, route_arm):
                         circle_waypoints = []
                         success, center_waypoints, circle_waypoints = circular_trajectory(rot_center, init_pose_guides, rot_degree, rot_axis, center_waypoints, circle_waypoints, step = 2, rot_gripper = False)
                         for wp in circle_waypoints:
-                                waypoints_SC6.append(ATC1.correctPose(wp, separation_arm, rotate = True, ATC_sign = -1, routing_app = False))
+                                waypoints_SC6.append(ATC1.correctPose(wp, separation_arm, rotate = True, ATC_sign = -1, routing_app = not rotate_gripper_z))
 
                         plan, success = compute_cartesian_path_velocity_control([waypoints_SC6], [speed_execution], arm_side=separation_arm)
                         if success:
                                 execute_plan_async(separation_group, plan)
                         print("###########TEST CIRC END###########")
 
-                if step2 == 7:
+                if step2 == 7 and op["sep_guide"]:
                         actuate_grippers(slide_distance, gripper_speed, separation_arm, grasp=False)
                         waypoints_SC7 = []
                         init_pose = arm_sep.get_current_pose().pose
@@ -5325,13 +5411,13 @@ def separate_cables_old(op, route_arm):
                                 sign_side = 1
                         else:
                                 sign_side = -1
-                        side_pose = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"] + fingers_size[0] + x_offset, sign_side*0.1, 0, 0, 0, 0])
-                        waypoints_SC7.append(ATC1.correctPose(side_pose, separation_arm, rotate = True, routing_app = False, ATC_sign = -1))
+                        side_pose = get_shifted_pose(next_guide_corner, [op["spot"][1]["width"] + fingers_size[0] + x_offset, sign_side*0.1, 0, 0, 0, 0])
+                        waypoints_SC7.append(ATC1.correctPose(side_pose, separation_arm, rotate = True, routing_app = not rotate_gripper_z, ATC_sign = -1))
                         plan, success, motion_group_plan = compute_cartesian_path_velocity_control_arms_occlusions([waypoints_SC7], [slow_speed_execution], arm_side=separation_arm)
                         if success:
                                 execute_plan_async(motion_group_plan, plan)
 
-                if step2 == 8:
+                if step2 == 8 and op["sep_guide"]:
                         actuate_grippers(grasp_distance, gripper_speed, separation_arm, grasp=True)
                         waypoints_SC8 = []
                         init_pose = arm_sep.get_current_pose().pose
@@ -5340,8 +5426,8 @@ def separate_cables_old(op, route_arm):
                                 sign_side = 1
                         else:
                                 sign_side = -1
-                        side_pose_tension = get_shifted_pose(op["spot"][1]["pose_corner"], [op["spot"][1]["width"] + fingers_size[0] + x_offset, sign_side*(0.1 + force_offset/2), 0, 0, 0, 0])
-                        waypoints_SC8.append(ATC1.correctPose(side_pose_tension, separation_arm, rotate = True, routing_app = False, ATC_sign = -1))
+                        side_pose_tension = get_shifted_pose(next_guide_corner, [op["spot"][1]["width"] + fingers_size[0] + x_offset, sign_side*(0.1 + force_offset/2), 0, 0, 0, 0])
+                        waypoints_SC8.append(ATC1.correctPose(side_pose_tension, separation_arm, rotate = True, routing_app = not rotate_gripper_z, ATC_sign = -1))
                         #Move with force_control
                         if force_control_active:
                                 rospy.wait_for_service('/right_norbdo/tare')
@@ -5359,10 +5445,14 @@ def separate_cables_old(op, route_arm):
                         force_controlled = False
                         rospy.sleep(2.5) #REDUCE. Original 2.5
                         holding_cables = True
-                        holding_comeback_pose = get_shifted_pose(op["spot"][1]["pose_corner"],[op["spot"][1]["width"] + fingers_size[0] + x_offset + 0.05, sign_side*(0.05), op["spot"][1]['height']/2, 0, 0, 1.57])
-                        holding_comeback_pose_corrected = ATC1.correctPose(holding_comeback_pose, separation_arm, rotate = True, routing_app = False, ATC_sign = -1)
+                        if separation_arm=="right":
+                                sign_side = 1
+                        else:
+                                sign_side = -1
+                        holding_comeback_pose = get_shifted_pose(next_guide_corner,[op["spot"][1]["width"] + fingers_size[0] + x_offset + 0.05, sign_side*(0.05), op["spot"][1]['height']/2, 0, 0, sign_side * (-1.57)])
+                        holding_comeback_pose_corrected = ATC1.correctPose(holding_comeback_pose, separation_arm, rotate = True, routing_app = not rotate_gripper_z, ATC_sign = -1)
 
-                if step2 == 9:
+                if (step2 == 9 and op["sep_guide"]) or (step2==4 and not op["sep_guide"]):
                         #retract_arm(separation_arm, op["spot"][1])
                         step1 += 1
                         step2 = 0
@@ -5390,25 +5480,38 @@ def grasp_cables(op, route_arm, separated = False):
         print("Step1: "+str(step1))
         print("Step2: "+str(step2))
 
+        #Check gripper orientation
+        rotate_gripper_z = False
+        if separated:
+                con_pose = copy.deepcopy(op["spot"][1]["pose_corner"])
+                grasp_guide_fw = get_shifted_pose(op["spot"][0]["pose_corner"], [0.01, 0, 0, 0, 0, 0])
+                if compute_distance_xy(con_pose, grasp_guide_fw) < compute_distance_xy(con_pose, op["spot"][0]["pose_corner"]): #Direction of routing is not forward
+                        print("GRASP BACKWARD INITIALLY")
+                        grasp_guide_corner = get_shifted_pose(op["spot"][0]["pose_corner"], [op["spot"][0]["width"], op["spot"][0]["gap"], 0, 0, 0, math.pi])  
+                else:
+                        print("GRASP FORWARD INITIALLY")
+                        grasp_guide_corner = copy.deepcopy(op["spot"][0]["pose_corner"])
+        else:
+                print(op["spot"])
+                grasp_guide_corner = copy.deepcopy(op["spot"][0]["pose_corner"])
+
         #routing_app = not separated
         routing_app = True
         if separated:
                 x_grasp_dist = -(grasp_offset+EEF_route[0]/2)
         else:
-                x_grasp_dist = op["spot"]['width']+grasp_offset+EEF_route[0]/2
-
-        print("###SEPARATED: " + str(separated))
+                x_grasp_dist = op["spot"][0]['width']+grasp_offset+EEF_route[0]/2
 
         route_group = 'arm_'+route_arm
         arm = motion_groups[route_group]
         trash_pose = arm.get_current_pose().pose
 
         if separated:
-                mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, (op["spot"]['gap']/2)+0.005, op["spot"]["height"] + 2*z_offset, 0, 0, 0])
-                mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, (op["spot"]['gap']/2)+0.005, 0.009, 0, 0, 0])
+                mold_up_forward = get_shifted_pose(grasp_guide_corner, [x_grasp_dist, (op["spot"][0]['gap']/2)+0.005, op["spot"][0]["height"] + 2*z_offset, 0, 0, 0])
+                mold_forward = get_shifted_pose(grasp_guide_corner, [x_grasp_dist, (op["spot"][0]['gap']/2)+0.005, 0.009, 0, 0, 0])
         else:
-                mold_up_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, op["spot"]['gap']/2, op["spot"]["height"] + 2*z_offset, 0, 0, 0])
-                mold_forward = get_shifted_pose(op["spot"]["pose_corner"], [x_grasp_dist, op["spot"]['gap']/2, 0, 0, 0, 0])
+                mold_up_forward = get_shifted_pose(grasp_guide_corner, [x_grasp_dist, op["spot"][0]['gap']/2, op["spot"][0]["height"] + 2*z_offset, 0, 0, 0])
+                mold_forward = get_shifted_pose(grasp_guide_corner, [x_grasp_dist, op["spot"][0]['gap']/2, 0, 0, 0, 0])
         mold_up_forward_corrected = ATC1.correctPose(mold_up_forward, route_arm, rotate = True, ATC_sign = -1, routing_app = routing_app, secondary_frame = True)
         
         if separated:
@@ -5452,7 +5555,7 @@ def grasp_cables(op, route_arm, separated = False):
                         #rospy.sleep(1) #REDUCE. Original 1
                         if separated:
                                 init_pose = arm.get_current_pose().pose
-                                retract_z = get_shifted_pose(op["spot"]["pose_corner"], [0, 0, op["spot"]["height"] + z_offset*2, 0, 0, 0])
+                                retract_z = get_shifted_pose(grasp_guide_corner, [0, 0, op["spot"][0]["height"] + z_offset*2, 0, 0, 0])
                                 retract_z_corrected = ATC1.correctPose(retract_z, route_arm, rotate = True, routing_app = routing_app, ATC_sign = -1, secondary_frame=True)
                                 new_pose = copy.deepcopy(init_pose)
                                 new_pose.position.z = retract_z_corrected.position.z
@@ -5664,10 +5767,12 @@ def update_route_arm_info(op):
         global force_connector
         global force_limit_cable
         global force_limit_connector
+        global separated_global
+        global separation_arm
 
         force_limit_cable = force_cable[op['spot']['name']]
         force_limit_connector = force_connector[op['spot']['name']]
-        if op['spot']['side'] == "R":
+        if (op['spot']['side'] == "R" and not separated_global) or (separation_arm == "right" and separated_global):
                 route_arm = "right"
                 route_group = "arm_right"
                 group2 = "arm_left"
@@ -5683,6 +5788,7 @@ def update_route_arm_info(op):
                 arm2 = arm_right
                 EEF_route = ATC1.EEF_dict[ATC1.EEF_left].fingers_dim
                 move_away2_sign = 1
+        separated_global = False
                
 
 def check_tools(op):
@@ -6004,7 +6110,10 @@ if __name__ == '__main__':
         ops_info = []
         ops_info_text = []
         last_PC_spot = {}
+        routed_cables = []
+        WH_sep = []
         for ops in opsResult.data:
+                print(ops.type)
                 ops_temp = {}
                 ops_info_text_temp = ""
                 ops_temp['type'] = ops.type
@@ -6055,65 +6164,86 @@ if __name__ == '__main__':
                         rospy.wait_for_service('ELVEZ_platform_handler/cable_info')
                         my_service_cab = rospy.ServiceProxy('ELVEZ_platform_handler/cable_info', cable_info)
                         
-                        if ops.label[0][:2]=='WH':
-                                #route cable group
-                                ops_temp['label'] = ops.label[0]
-                        else:
+                        if not (ops.label[0][:2]=='WH'): #Previous operations before routing the required cable group
                                 conReq = connector_infoRequest()
                                 conReq.label = ops.label[0]
-                                conResult = my_service_con(conReq)
-                                cablesGroup = []
-                                for cable in conResult.cables:
-                                        cablesGroup.append(cable.label)
-                                conReq.label = 'WH'+str(conResult.WH)
-                                conResult = my_service_con(conReq)
-                                cablesWH = {}
-                                cablesGroupIndex = []
-                                for cable in conResult.cables:
-                                        if cable.label in cablesGroup:
-                                                cablesGroupIndex.append(int(cable.pins[0]))
-                                        cablesWH[cable.label]=int(cable.pins[0])
-                                if max(cablesGroupIndex) < (len(cablesWH)-1):
-                                        #separate upper cables and place them in another guide
-                                        sub_op_temp = {}
-                                        sub_op_temp['type'] = 'SC'
-                                        sub_op_temp['WH'] = str(conResult.WH)
-                                        sub_op_temp['label'] = list(range(max(cablesGroupIndex)+1, len(cablesWH)))
-                                        sub_op_temp['spot'] = []
-                                        sub_op_temp['spot'].append(last_PC_spot)
-                                        guideReq = guide_infoRequest()
-                                        guideReq.jig = 'J'+str(conResult.WH)+'S' #DEFINE THIS ELEMENT
-                                        guideReq.guide = '1'
-                                        guideResult = my_service(guideReq)
-                                        guide = guideResult.data
-                                        sub_op_temp['spot'].append({'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions})
-                                        ops_info.append(sub_op_temp)
-                                        ops_info_text.append('Separate cables: ' + str(sub_op_temp['label']) + " in J" + str(conResult.WH) + "S")
-                                        #grasp cable group from the first route position
-                                        sub_op_temp = {}
-                                        sub_op_temp['type'] = 'GC'
-                                        sub_op_temp['label'] = ops.label[0]
-                                        #sub_op_temp['spot'] = ops_temp['spot'][0]
-                                        sub_op_temp['spot'] = last_PC_spot
-                                        ops_info.append(sub_op_temp)
-                                        ops_info_text.append('Grasp cable group ' + str(ops.label[0]) + " from " + str(sub_op_temp['spot']['jig']))
-                                        #route cable group
-                                        ops_temp['label'] = ops.label[0]
-                                else:
-                                        #grasp cable group from the separation guide
-                                        sub_op_temp = {}
-                                        sub_op_temp['type'] = 'GCS'
-                                        sub_op_temp['label'] = ops.label[0]
-                                        guideReq = guide_infoRequest()
-                                        guideReq.jig = 'J'+str(conResult.WH)+'S'
-                                        guideReq.guide = '1'
-                                        guideResult = my_service(guideReq)
-                                        guide = guideResult.data
-                                        sub_op_temp['spot']={'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions}
-                                        ops_info.append(sub_op_temp)
-                                        ops_info_text.append('Grasp cable group ' + str(ops.label[0]) + " from J" + str(conResult.WH) + "S")
-                                        #route cable group
-                                        ops_temp['label'] = ops.label[0]
+                                groupResult = my_service_con(conReq)
+                                cablesGroup = {}
+                                conReq.label = 'WH'+str(groupResult.WH)
+                                whResult = my_service_con(conReq)
+                                cablesWH_remaining = {}
+                                for cable in whResult.cables:
+                                        if not (cable.label in routed_cables):
+                                                cablesWH_remaining[cable.label]=int(cable.pins[0]) #Cables of the WH that haven't been routed yet
+                                for cable in groupResult.cables:
+                                        cablesGroup[cable.label]=int(cable.pins[0])
+                                        routed_cables.append(cable.label)
+                                max_index_group = max(zip(cablesGroup.values(), cablesGroup.keys()))[0]
+                                min_index_group = min(zip(cablesGroup.values(), cablesGroup.keys()))[0]
+                                max_index_WH_remaining = max(zip(cablesWH_remaining.values(), cablesWH_remaining.keys()))[0]
+
+                                if len(cablesGroup) < (len(cablesWH_remaining)):
+                                        if groupResult.WH in WH_sep: #ERROR
+                                                print("ERROR. Cannot handle more than one separation per wiring harness")
+                                        else:
+                                                sub_op_temp = {}
+                                                sub_op_temp['type'] = 'SC'
+                                                sub_op_temp['WH'] = str(groupResult.WH)
+                                                sub_op_temp['spot'] = []
+                                                sub_op_temp['spot'].append(last_PC_spot)
+
+                                                if max_index_group < max_index_WH_remaining: #Route cables in the bottom. separate upper cables and place them in another guide
+                                                        sub_op_temp['label'] = [max_index_group+1]
+                                                        guideReq = guide_infoRequest()
+                                                        guideReq.jig = 'J'+str(groupResult.WH)+'S' #DEFINE THIS ELEMENT
+                                                        guideReq.guide = '1'
+                                                        guideResult = my_service(guideReq)
+                                                        guide = guideResult.data #Separation guide
+                                                        sub_op_temp['spot'].append({'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions})
+                                                        sub_op_temp['sep_guide'] = True
+                                                        ops_info.append(sub_op_temp)
+                                                        ops_info_text.append('Separate the ' + str(int(max_index_WH_remaining-max_index_group)) + ' top cables of WH' + str(groupResult.WH) + " in J" + str(groupResult.WH) + "S")
+                                                        #Grasp cable group from the first route position
+                                                        sub_op_temp = {}
+                                                        sub_op_temp['type'] = 'GC'
+                                                        sub_op_temp['label'] = ops.label[0]
+                                                        sub_op_temp['spot'] = []
+                                                        sub_op_temp['spot'].append(last_PC_spot)
+                                                        ops_info.append(sub_op_temp)
+                                                        ops_info_text.append('Grasp cable group ' + str(ops.label[0]) + " from " + str(sub_op_temp['spot'][0]['jig']))
+                                                        WH_sep.append(groupResult.WH) #Add the WH to the list of already separated WHs                                                        
+
+                                                else: #Route cables in the top
+                                                        sub_op_temp['spot'].append(ops_temp['spot'][0]) #First routing guide after separation
+                                                        sub_op_temp['label'] = [min_index_group]
+                                                        print("MIN: " + str(min_index_group))
+                                                        sub_op_temp['sep_guide'] = False
+                                                        ops_info.append(sub_op_temp)
+                                                        ops_info_text.append('Separate the ' + str(int(len(cablesGroup))) + ' top cables of WH' + str(groupResult.WH))
+
+                                else: #Route remaining cables
+                                        if groupResult.WH in WH_sep: #grasp cable group from the separation guide
+                                                sub_op_temp = {}
+                                                sub_op_temp['type'] = 'GCS'
+                                                sub_op_temp['label'] = ops.label[0]
+                                                guideReq = guide_infoRequest()
+                                                guideReq.jig = 'J'+str(groupResult.WH)+'S'
+                                                guideReq.guide = '1'
+                                                guideResult = my_service(guideReq)
+                                                guide = guideResult.data
+                                                sub_op_temp['spot']=[]
+                                                sub_op_temp['spot'].append({'pose_corner': guide.key_corner_frame, 'gap': guide.key_gap, 'width': guide.key_length, 'height': guide.key_height, 'height_corner': guide.key_height_corner, 'collisions': guide.collisions, 'dimensions': guide.dimensions})
+                                                sub_op_temp['spot'].append(last_PC_spot)
+                                                ops_info.append(sub_op_temp)
+                                                ops_info_text.append('Grasp cable group ' + str(ops.label[0]) + " from J" + str(groupResult.WH) + "S")
+                                        else:
+                                                sub_op_temp = {}
+                                                sub_op_temp['type'] = 'GC'
+                                                sub_op_temp['label'] = ops.label[0]
+                                                sub_op_temp['spot'] = [last_PC_spot]
+                                                ops_info.append(sub_op_temp)
+                                                ops_info_text.append('Grasp cable group ' + str(ops.label[0]) + " from " + str(sub_op_temp['spot'][0]['jig']))
+
                 elif ops.type == "T":
                         rospy.wait_for_service('/ELVEZ_platform_handler/guide_info')
                         my_service = rospy.ServiceProxy('/ELVEZ_platform_handler/guide_info', guide_info)
