@@ -1,7 +1,7 @@
 prop,value
 grippers_control_real,Y
 offset_grasp,8
-use_camera_demo,Y
+use_camera_demo,N
 speed_demo_per,1
 speed_fast_real_mms,40
 gripper_slide_dist,36
@@ -27,8 +27,8 @@ speed_slow_real_mms,10
 speed_tension_demo_mms,20
 offset_force,10
 speed_real_per,0.05
-gripper_open_dist,90
 gripper_grasp_dist,30
+gripper_open_dist,90
 gripper_speed_slow,20
 gripper_speed,30
 grippers_control_demo,N
